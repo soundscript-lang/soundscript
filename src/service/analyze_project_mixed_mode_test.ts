@@ -708,6 +708,7 @@ Deno.test(
 
     const result = await analyzeProject({
       projectPath: join(tempDirectory, 'tsconfig.json'),
+      target: 'js-browser',
       workingDirectory: tempDirectory,
     });
 
@@ -1984,7 +1985,7 @@ Deno.test(
       ),
       'src/index.sts': [
         '// #[interop]',
-        'import { document } from "host:dom";',
+        'import { document } from "web:dom";',
         '',
         'export function main(): Element | null {',
         "  return document.getElementById('app');",
@@ -1995,6 +1996,7 @@ Deno.test(
 
     const result = await analyzeProject({
       projectPath: join(tempDirectory, 'tsconfig.json'),
+      target: 'js-browser',
       workingDirectory: tempDirectory,
     });
 
@@ -2548,8 +2550,7 @@ Deno.test('analyzeProject leaves ordinary .ts imports of macro-backed .sts expor
     ),
     'src/lib.sts': [
       "import { log } from 'sts:experimental/debug';",
-      '// #[extern]',
-      'declare function __sts_log<T>(source: string, value: T): T;',
+      'function __sts_log<T>(_source: string, value: T): T { return value; }',
       'export const value = log(1);',
       '',
     ].join('\n'),
@@ -2994,8 +2995,7 @@ Deno.test('analyzeProject lets .ts import an explicit .sts specifier', async () 
     ),
     'src/lib.sts': [
       "import { log } from 'sts:experimental/debug';",
-      '// #[extern]',
-      'declare function __sts_log<T>(source: string, value: T): T;',
+      'function __sts_log<T>(_source: string, value: T): T { return value; }',
       'export const value = log(1);',
       '',
     ].join('\n'),

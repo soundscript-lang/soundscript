@@ -97,7 +97,9 @@ function assertFailedCheckWithCodes(
   for (const expectedCode of expectedCodes) {
     if (!actualCodes.includes(expectedCode)) {
       throw new Error(
-        `${label} returned unexpected diagnostic codes ${JSON.stringify(actualCodes)} instead of containing ${JSON.stringify(expectedCodes)}.`,
+        `${label} returned unexpected diagnostic codes ${
+          JSON.stringify(actualCodes)
+        } instead of containing ${JSON.stringify(expectedCodes)}.`,
       );
     }
   }
@@ -171,7 +173,7 @@ export async function smokeTestCliBinary(outputPath: string, version: string): P
       join(browserProjectRoot, 'src', 'main.sts'),
       [
         '// #[interop]',
-        "import { document, window } from 'host:dom';",
+        "import { document, window } from 'web:dom';",
         '',
         'export const pageTitleLength = document.title.length + window.location.href.length;',
         '',
@@ -203,7 +205,9 @@ export async function smokeTestCliBinary(outputPath: string, version: string): P
       join(nodeProjectRoot, 'src', 'main.sts'),
       [
         '// #[interop]',
-        "import { Buffer, process } from 'host:node';",
+        "import { Buffer } from 'node:buffer';",
+        '// #[interop]',
+        "import process from 'node:process';",
         '// #[interop]',
         "import { channel } from 'node:diagnostics_channel';",
         '',

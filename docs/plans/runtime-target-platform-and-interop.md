@@ -5,10 +5,10 @@
 Record the runtime-target, platform, stdlib capability, and host-boundary model so the checker,
 compiler, stdlib, macro, and packaging work do not drift into incompatible host stories.
 
-This plan remains open because the target matrix exists, but the platform surface is still uneven:
-portable globals and core `sts:*` modules are shipped, while capability modules such as
-`sts:streams`, `sts:concurrency`, `sts:fs`, `sts:env`, `sts:cli`, `sts:net`, `sts:http`,
-`sts:process`, and `sts:console` still need a real target-aware support story.
+This plan remains open because the target matrix exists, but the platform surface is still uneven.
+The JS-first stdlib work has added target-aware support for the portable Web-style modules,
+JS-neutral support modules, js-node provider modules, and js-browser gates. Wasm and native provider
+work still need the same target-aware implementation story.
 
 `docs/plans/structured-concurrency-and-parallelism.md` is the companion plan for the async,
 structured concurrency, true parallelism, runtime-provider, and low-level synchronization model. Its
@@ -168,6 +168,8 @@ Wasm workers, WASI runtimes, and native threads:
 - `ThreadPool.default.run(...)` must either run true parallel work on a worker/thread and respect
   `Send`, or be statically target-gated / return an unsupported-capability failure for dynamic
   profile builds. It must not silently run CPU work on the event loop.
+- `ThreadPool.default` is lazy. Reading the handle should not create workers; the provider starts
+  the managed pool only on first submitted work or explicit eager runtime configuration.
 - `Thread.blockOn(...)` is a native-profile blocking bridge and should be unavailable on JS targets
   and browser-main-thread Wasm.
 
@@ -176,6 +178,11 @@ Wasm workers, WASI runtimes, and native threads:
 Normal code should not manually construct a runtime at every call site. The host adapter, CLI
 launcher, test harness, server adapter, Wasm wrapper, or native startup path installs the managed
 runtime once and makes provider capabilities available to user code.
+
+This is a provider layer, not a second async runtime. On JS targets it delegates to host promises
+and host async context where available. On WasmGC targets it sits over the compiler-owned promise
+runtime, async frames, scheduler queue, and host-completion bridge. On native targets it owns the
+scheduler, netpoller, and thread runtime directly.
 
 Provider responsibilities include:
 

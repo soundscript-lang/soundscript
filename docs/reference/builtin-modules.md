@@ -55,28 +55,65 @@ The stable `sts:*` surface stays focused and composable.
   as `codec.isoDate` and `codec.url`.
 - `sts:metadata` owns derive metadata inspection helpers such as `metadataOf(...)` and
   `attachMetadata(...)`.
-- `sts:async` currently owns `Task<T, E>` and result-first async helpers.
+- `sts:concurrency/task` owns `Task<T, E>` and result-first async helpers exposed through `Task.*`.
+- `sts:concurrency/runtime` owns js-node structured concurrency primitives such as `TaskGroup` and
+  `AsyncContext`; other targets gate that module until they have a provider.
+- `sts:capabilities`, `sts:time`, `sts:console`, `sts:streams`, `sts:path`, and `sts:bytes` are
+  JS-neutral portable support modules.
+- `sts:fs`, `sts:env`, `sts:cli`, `sts:process`, `sts:http`, and `sts:net` are initial js-node
+  provider modules and are capability-gated away from browser/Wasm targets.
 - `sts:compare` owns `Eq`, `Order`, and comparator composition helpers.
 - `sts:hash` owns hashing and equality-key protocols.
 - `sts:derive` owns compiler-provided declaration macros such as `eq`, `hash`, `decode`, `encode`,
   `codec`, and `tagged`.
 - `sts:hkt` owns low-level higher-kinded type machinery.
 - `sts:typeclasses` owns `Functor`, `Applicative`, `Monad`, `AsyncMonad`, and `Do`.
-- `sts:url`, `sts:fetch`, `sts:text`, and `sts:random` are the initial portable leaf modules.
+- `sts:url`, `sts:fetch`, `sts:streams`, `sts:text`, and `sts:random` are the initial portable leaf
+  modules.
 
 If you are deciding where a helper should live, prefer the narrowest leaf module that honestly
 matches the ownership boundary.
 
-## Planned Pre-V1 Breaking Direction
+## Current JS Target Availability
+
+The portable stdlib is being implemented JS-first. The current checked behavior is:
+
+| Surface                                                                                      | js-browser               | js-node                  |
+| -------------------------------------------------------------------------------------------- | ------------------------ | ------------------------ |
+| pure language modules (`sts:result`, `sts:json`, `sts:decode`, `sts:encode`, etc.)           | yes                      | yes                      |
+| portable Web-style modules (`sts:url`, `sts:fetch`, `sts:streams`, `sts:text`, `sts:random`) | yes                      | yes                      |
+| JS-neutral support (`sts:capabilities`, `sts:time`, `sts:console`, `sts:path`, `sts:bytes`)  | yes                      | yes                      |
+| task helpers (`sts:concurrency/task`)                                                        | yes                      | yes                      |
+| structured concurrency runtime (`sts:concurrency/runtime`, `TaskGroup`, `AsyncContext`)      | no                       | yes                      |
+| parallel/sync/atomics provider modules                                                       | gated                    | gated                    |
+| filesystem (`sts:fs`)                                                                        | no                       | yes                      |
+| environment (`sts:env`)                                                                      | no                       | yes                      |
+| CLI (`sts:cli`)                                                                              | no                       | yes                      |
+| process information and child processes (`sts:process`)                                      | no                       | yes                      |
+| HTTP client                                                                                  | use `sts:fetch`          | use `sts:fetch`          |
+| HTTP server (`sts:http`)                                                                     | no                       | yes                      |
+| raw DNS/TCP/TLS networking (`sts:net`)                                                       | no                       | yes                      |
+| raw Web host imports (`web:*`)                                                               | `// #[interop]` required | no                       |
+| raw Node host imports (`node:*`)                                                             | no                       | `// #[interop]` required |
+| app/embedder ambient values (`extern:*`)                                                     | `// #[interop]` required | `// #[interop]` required |
+
+`js-browser` diagnostics intentionally reject js-node provider modules rather than exposing stubs
+that fail later at runtime. Browser networking should use `fetch`, WebSocket, WebTransport, and
+other Web-platform APIs instead of `sts:net`.
+
+Wasm target runtime work is deferred. New JS-provider modules should remain unsupported there until
+the Wasm compiler/runtime can lower those capabilities through the host-provider model.
+
+## Pre-V1 Breaking Direction
 
 Soundscript does not have external compatibility obligations yet, so the stdlib can still make
 breaking cleanup changes before the stable contract.
 
-The current async helper shape should be replaced before stabilization:
+The old async helper shape has been removed:
 
-- move `Task<T, E>` and task helpers from `sts:async` to `sts:concurrency/task`
-- expose task helpers as `Task.*` rather than a flat set of bare functions
-- remove or rename ambiguous promise-fanout helpers such as `parallel(...)`
+- use `sts:concurrency/task` instead of `sts:async`
+- access task helpers through `Task.*` rather than a flat set of bare functions
+- use `Task.all(...)` for promise fanout instead of the removed `parallel(...)`
 - keep true parallel execution under `sts:concurrency/parallel`
 - keep synchronization and atomic shared-memory APIs under `sts:concurrency/sync` and
   `sts:concurrency/atomics`, not top-level `sts:sync` or `sts:atomics`

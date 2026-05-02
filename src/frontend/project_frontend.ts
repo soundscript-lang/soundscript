@@ -47,6 +47,7 @@ import {
   collectImportedMacroSiteKindsBySpecifier as collectImportedMacroSiteKindsForSource,
   collectImportedNamedBindings,
 } from './macro_site_kind_support.ts';
+import { resolveExternDeclarationModule } from './extern_module_support.ts';
 import {
   classifyImportedBindingUsage,
   type ImportedBindingUsage,
@@ -4051,6 +4052,7 @@ export function createPreparedCompilerHost(
   allowSoundscriptProgramFileResolution = true,
 ): PreparedCompilerHost {
   const preparedFiles = new Map<string, PreparedSourceFile>();
+  const externDeclarationModuleTexts = new Map<string, string>();
   const macroPreparationByFile = new Map<string, boolean>();
   const sourceFileCacheStats = {
     projectedDeclarationHits: 0,
@@ -4105,6 +4107,10 @@ export function createPreparedCompilerHost(
     }
 
     return projectedDeclarationOverrides.get(toProjectedDeclarationSourceFileName(fileName));
+  }
+
+  function getExternDeclarationModuleText(fileName: string): string | undefined {
+    return externDeclarationModuleTexts.get(fileName);
   }
 
   function shouldUsePlainHostSourceFile(fileName: string): boolean {
@@ -4529,6 +4535,9 @@ export function createPreparedCompilerHost(
     return {
       directoryExists: baseHost.directoryExists?.bind(baseHost),
       fileExists(fileName: string): boolean {
+        if (getExternDeclarationModuleText(fileName) !== undefined) {
+          return true;
+        }
         if (getProjectedDeclarationText(fileName) !== undefined) {
           return true;
         }
@@ -4539,6 +4548,10 @@ export function createPreparedCompilerHost(
         (() => ts.sys.getCurrentDirectory()),
       getDirectories: baseHost.getDirectories?.bind(baseHost),
       readFile(fileName: string): string | undefined {
+        const externDeclarationText = getExternDeclarationModuleText(fileName);
+        if (externDeclarationText !== undefined) {
+          return externDeclarationText;
+        }
         const projectedDeclarationText = getProjectedDeclarationText(fileName);
         if (projectedDeclarationText !== undefined) {
           return projectedDeclarationText;
@@ -4707,6 +4720,25 @@ export function createPreparedCompilerHost(
     ) => {
       const resolutionMode = resolutionModesByIndex?.[originalIndex] ??
         containingSourceFile?.impliedNodeFormat;
+      const sourceFileName = toSourceFileName(sourceContainingFile);
+      const externDeclarationModule = resolveExternDeclarationModule(
+        moduleName,
+        sourceContainingFile,
+        fileOverrides.get(sourceFileName) ?? baseHost.readFile(sourceFileName) ??
+          baseHost.readFile(sourceContainingFile),
+      );
+      if (externDeclarationModule) {
+        externDeclarationModuleTexts.set(
+          externDeclarationModule.fileName,
+          externDeclarationModule.text,
+        );
+        return {
+          extension: ts.Extension.Dts,
+          isExternalLibraryImport: true,
+          resolvedFileName: externDeclarationModule.fileName,
+        };
+      }
+
       const preferredSoundscript = resolvePreferredSoundscriptModule(
         moduleName,
         sourceContainingFile,
@@ -4893,6 +4925,9 @@ export function createPreparedCompilerHost(
     host: {
       ...baseHostWithoutResolveModuleNameLiterals,
       fileExists(fileName: string): boolean {
+        if (getExternDeclarationModuleText(fileName) !== undefined) {
+          return true;
+        }
         const sourceFileName = toSourceFileName(fileName);
         return fileOverrides.has(sourceFileName) || baseHost.fileExists(sourceFileName);
       },
@@ -4902,6 +4937,21 @@ export function createPreparedCompilerHost(
         onError?: (message: string) => void,
         shouldCreateNewSourceFile?: boolean,
       ): ts.SourceFile | undefined {
+        const externDeclarationText = getExternDeclarationModuleText(fileName);
+        if (externDeclarationText !== undefined) {
+          const sourceFile = getCachedOrCreateSourceFile(
+            reusableState.projectedDeclarationSourceFiles,
+            'projectedDeclaration',
+            fileName,
+            externDeclarationText,
+            languageVersion,
+            '',
+            shouldCreateNewSourceFile,
+          );
+          programSourceFiles.add(fileName);
+          return sourceFile;
+        }
+
         const projectedDeclarationText = getProjectedDeclarationText(fileName);
         if (projectedDeclarationText !== undefined) {
           const sourceFile = getCachedOrCreateSourceFile(
@@ -4965,6 +5015,10 @@ export function createPreparedCompilerHost(
         return invalidateModuleResolutions;
       },
       readFile(fileName: string): string | undefined {
+        const externDeclarationText = getExternDeclarationModuleText(fileName);
+        if (externDeclarationText !== undefined) {
+          return externDeclarationText;
+        }
         const projectedDeclarationText = getProjectedDeclarationText(fileName);
         if (projectedDeclarationText !== undefined) {
           return projectedDeclarationText;

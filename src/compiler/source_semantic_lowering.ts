@@ -26,6 +26,22 @@ import type {
   SharedSemanticFunctionTypeSnapshotIR,
   SharedSemanticLocalTypeSnapshotIR,
 } from '../semantic/shared_semantic_facts.ts';
+import {
+  compilerValueTypeForStorage,
+  selectWasmGcStorage,
+  valueBoundaryFromSemanticType,
+} from './value_boundary_ir.ts';
+
+const SOUNDSCRIPT_BUILTIN_ERROR_INTERNAL_BRAND_KEY = '__ss_error_brand';
+const BUILTIN_ERROR_CONSTRUCTOR_NAMES = new Set([
+  'Error',
+  'EvalError',
+  'RangeError',
+  'ReferenceError',
+  'SyntaxError',
+  'TypeError',
+  'URIError',
+]);
 
 interface SourceSemanticFunctionSignature {
   boundary?: SemanticBoundarySurfaceIR;
@@ -47,8 +63,37 @@ interface SourceSemanticObjectLocal {
   }[];
 }
 
+const SOUNDSCRIPT_PROMISE_RESOLVE_HELPER_NAME = '__soundscript_promise_resolve';
+const SOUNDSCRIPT_PROMISE_REJECT_HELPER_NAME = '__soundscript_promise_reject';
+const SOUNDSCRIPT_PROMISE_THEN_HELPER_NAME = '__soundscript_promise_then';
+const SOUNDSCRIPT_PROMISE_NEW_PENDING_HELPER_NAME = '__soundscript_promise_new_pending';
+const SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME = '__soundscript_promise_resolve_into';
+const SOUNDSCRIPT_PROMISE_REJECT_INTO_HELPER_NAME = '__soundscript_promise_reject_into';
+
 interface SourceSemanticArrayLocal {
   elementRepresentation: CompilerValueType;
+}
+
+interface SourceSemanticMapLocal {
+  valueType: SemanticTypeIR;
+  valueRepresentation: CompilerValueType;
+}
+
+type SourceSemanticSetValuesArrayType = Extract<
+  SemanticStatementIR,
+  { kind: 'set_new' }
+>['valuesArrayType'];
+
+type SourceSemanticSetValuesElementType = Extract<
+  SemanticStatementIR,
+  { kind: 'set_new' }
+>['valuesElementType'];
+
+interface SourceSemanticSetLocal {
+  valueType: SemanticTypeIR;
+  valueRepresentation: CompilerValueType;
+  valuesArrayType: SourceSemanticSetValuesArrayType;
+  valuesElementType: SourceSemanticSetValuesElementType;
 }
 
 interface SourceSemanticClosureLocal {
@@ -58,6 +103,29 @@ interface SourceSemanticClosureLocal {
 
 interface SourceSemanticConstructorLocal {
   className: string;
+}
+
+interface SourceSemanticThrowTarget {
+  thrownFlagName: string;
+  thrownHeapName: string;
+  thrownValueName: string;
+}
+
+interface SourceSemanticCompletionTarget {
+  returnFlagName?: string;
+  returnValueName?: string;
+  returnRepresentation?: CompilerValueType;
+  breakFlagName?: string;
+  continueFlagName?: string;
+}
+
+const ASYNC_COMPLETION_NORMAL = 0;
+const ASYNC_COMPLETION_RETURN = 1;
+const ASYNC_COMPLETION_THROW = 2;
+
+interface AsyncCompletionNames {
+  kindName: string;
+  valueName: string;
 }
 
 type SourceSemanticLocalDeclarationKind = 'const' | 'let' | 'var' | 'param' | 'capture';
@@ -72,7 +140,11 @@ interface SourceSemanticModuleLoweringState {
 
 interface FunctionLoweringContext {
   functionName: string;
+  sourceFunctionName: string;
+  asyncFunction: boolean;
+  currentResultType?: SemanticTypeIR;
   functionResultArrayLocals: Map<string, SourceSemanticArrayLocal>;
+  functionParamTypes: Map<string, readonly SemanticTypeIR[]>;
   functionResultRepresentations: Map<string, CompilerValueType>;
   functionResultTypes: Map<string, SemanticTypeIR>;
   localRepresentations: Map<string, CompilerValueType>;
@@ -83,15 +155,20 @@ interface FunctionLoweringContext {
   constructorLocals: Map<string, SourceSemanticConstructorLocal>;
   localDeclarationKinds: Map<string, SourceSemanticLocalDeclarationKind>;
   localTypesByKey: Map<string, SemanticTypeIR>;
+  mapLocals: Map<string, SourceSemanticMapLocal>;
   moduleState: SourceSemanticModuleLoweringState;
   objectLayoutsByKey: Map<string, SemanticObjectLayoutIR>;
   objectLocals: Map<string, SourceSemanticObjectLocal>;
+  setLocals: Map<string, SourceSemanticSetLocal>;
+  unionLocals: Map<string, SemanticTypeIR>;
   classesByName: ReadonlyMap<string, SourceClassIR>;
   pendingStatements: SemanticStatementIR[];
   runtimeFamilies: Set<SemanticRuntimeFamilyId>;
   stringLiteralIds: Map<string, number>;
   stringLiterals: string[];
   switchBreakLocalStack: string[];
+  throwTargets: SourceSemanticThrowTarget[];
+  completionTargets: SourceSemanticCompletionTarget[];
   tempIndex: number;
   unsupportedKinds: Set<string>;
 }
@@ -120,12 +197,61 @@ function arrayRepresentationForSemanticType(
   }
 }
 
+type PromiseAllSupportedArrayValueType =
+  | 'owned_heap_array_ref'
+  | 'owned_array_ref'
+  | 'owned_number_array_ref'
+  | 'owned_boolean_array_ref'
+  | 'owned_tagged_array_ref';
+
 function arrayLocalInfoForSemanticType(type: SemanticTypeIR): SourceSemanticArrayLocal | undefined {
   if (type.kind !== 'array') {
     return undefined;
   }
   return {
     elementRepresentation: arrayElementRepresentationForSemanticType(type.element),
+  };
+}
+
+function mapLocalInfoForSemanticType(
+  type: SemanticTypeIR | undefined,
+): SourceSemanticMapLocal | undefined {
+  if (!type || type.kind !== 'map' || type.key.kind !== 'string') {
+    return undefined;
+  }
+  return {
+    valueType: type.value,
+    valueRepresentation: compilerValueTypeForStorage(
+      selectWasmGcStorage(valueBoundaryFromSemanticType(type.value)),
+    ),
+  };
+}
+
+function setLocalInfoForSemanticType(
+  type: SemanticTypeIR | undefined,
+): SourceSemanticSetLocal | undefined {
+  if (!type || type.kind !== 'set') {
+    return undefined;
+  }
+  const valueStorage = selectWasmGcStorage(valueBoundaryFromSemanticType(type.value));
+  const valueRepresentation = compilerValueTypeForStorage(valueStorage);
+  const valuesArrayType: SourceSemanticSetValuesArrayType = valueRepresentation === 'f64'
+    ? 'owned_number_array_ref'
+    : valueRepresentation === 'i32'
+    ? 'owned_boolean_array_ref'
+    : valueRepresentation === 'owned_string_ref'
+    ? 'owned_array_ref'
+    : 'owned_tagged_array_ref';
+  const valuesElementType: SourceSemanticSetValuesElementType = valueRepresentation === 'f64' ||
+      valueRepresentation === 'i32' ||
+      valueRepresentation === 'owned_string_ref'
+    ? valueRepresentation
+    : 'tagged_ref';
+  return {
+    valueType: type.value,
+    valueRepresentation,
+    valuesArrayType,
+    valuesElementType,
   };
 }
 
@@ -167,6 +293,1843 @@ function representationForSemanticType(type: SemanticTypeIR): CompilerValueType 
       const exhaustiveCheck: never = type;
       return exhaustiveCheck;
     }
+  }
+}
+
+function isFiniteUnionSemanticType(type: SemanticTypeIR | undefined): boolean {
+  return type?.kind === 'finite_union' || type?.kind === 'union';
+}
+
+function taggedUnionExpressionForValue(
+  value: SemanticExpressionIR,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (value.representation === 'tagged_ref') {
+    context.runtimeFamilies.add('finite_union');
+    return value;
+  }
+  context.runtimeFamilies.add('finite_union');
+  switch (value.representation) {
+    case 'f64':
+      return { kind: 'tag_number', value, representation: 'tagged_ref' };
+    case 'i32':
+      return { kind: 'tag_boolean', value, representation: 'tagged_ref' };
+    case 'owned_string_ref':
+      context.runtimeFamilies.add('string');
+      return { kind: 'tag_string', value, representation: 'tagged_ref' };
+    case 'symbol_ref':
+      context.runtimeFamilies.add('symbol');
+      return { kind: 'tag_symbol', value, representation: 'tagged_ref' };
+    case 'bigint_ref':
+      context.runtimeFamilies.add('bigint');
+      return { kind: 'tag_bigint', value, representation: 'tagged_ref' };
+    case 'heap_ref':
+    case 'owned_number_array_ref':
+    case 'owned_boolean_array_ref':
+    case 'owned_array_ref':
+    case 'owned_heap_array_ref':
+    case 'owned_tagged_array_ref':
+    case 'closure_ref':
+    case 'class_constructor_ref':
+      return { kind: 'tag_heap_object', value, representation: 'tagged_ref' };
+    default:
+      return undefined;
+  }
+}
+
+function untagUnionExpressionForRepresentation(
+  value: SemanticExpressionIR,
+  representation: CompilerValueType,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (value.representation !== 'tagged_ref') {
+    return value.representation === representation ? value : undefined;
+  }
+  context.runtimeFamilies.add('finite_union');
+  switch (representation) {
+    case 'f64':
+      return { kind: 'untag_number', value, representation: 'f64' };
+    case 'i32':
+      return { kind: 'untag_boolean', value, representation: 'i32' };
+    case 'owned_string_ref':
+      context.runtimeFamilies.add('string');
+      return { kind: 'untag_owned_string', value, representation: 'owned_string_ref' };
+    case 'symbol_ref':
+      context.runtimeFamilies.add('symbol');
+      return { kind: 'untag_symbol', value, representation: 'symbol_ref' };
+    case 'bigint_ref':
+      context.runtimeFamilies.add('bigint');
+      return { kind: 'untag_bigint', value, representation: 'bigint_ref' };
+    case 'heap_ref':
+    case 'owned_number_array_ref':
+    case 'owned_boolean_array_ref':
+    case 'owned_array_ref':
+    case 'owned_heap_array_ref':
+    case 'owned_tagged_array_ref':
+    case 'closure_ref':
+    case 'class_constructor_ref':
+      return { kind: 'untag_heap_object', value, representation };
+    default:
+      return undefined;
+  }
+}
+
+function adaptExpressionToSemanticType(
+  value: SemanticExpressionIR,
+  targetType: SemanticTypeIR | undefined,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (!targetType) {
+    return value;
+  }
+  if (isFiniteUnionSemanticType(targetType)) {
+    return taggedUnionExpressionForValue(value, context);
+  }
+  const targetRepresentation = representationForSemanticType(targetType);
+  if (value.representation === targetRepresentation) {
+    return value;
+  }
+  return untagUnionExpressionForRepresentation(value, targetRepresentation, context);
+}
+
+function promiseValueTypeForSemanticType(
+  type: SemanticTypeIR | undefined,
+): SemanticTypeIR | undefined {
+  return type?.kind === 'promise' ? type.value : undefined;
+}
+
+function promiseReactionTaggedValueType(): SemanticTypeIR {
+  return { kind: 'finite_union', arms: [] };
+}
+
+function promiseReactionClosureType(paramCount: number): SemanticTypeIR {
+  const taggedValue = promiseReactionTaggedValueType();
+  return {
+    kind: 'closure',
+    signatures: [{
+      id: 0,
+      params: Array.from({ length: paramCount }, () => taggedValue),
+      result: taggedValue,
+    }],
+  };
+}
+
+function promiseResolveExpressionForValue(
+  rawValue: SemanticExpressionIR,
+  promiseValueType: SemanticTypeIR | undefined,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  const value = adaptExpressionToSemanticType(rawValue, promiseValueType, context) ?? rawValue;
+  const taggedValue = taggedUnionExpressionForValue(value, context);
+  if (!taggedValue) {
+    return undefined;
+  }
+  context.runtimeFamilies.add('promise');
+  return {
+    kind: 'call',
+    callee: SOUNDSCRIPT_PROMISE_RESOLVE_HELPER_NAME,
+    args: [taggedValue],
+    representation: 'heap_ref',
+  };
+}
+
+function projectObjectExpressionToSemanticType(
+  source: SourceExpressionIR,
+  value: SemanticExpressionIR,
+  targetType: SemanticTypeIR | undefined,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (!targetType || targetType.kind !== 'object' || value.representation !== 'heap_ref') {
+    return undefined;
+  }
+  const sourceLayout = objectLocalInfoForRead(source, value, context);
+  const targetLayout = objectLocalForParameterType(targetType, context);
+  if (!sourceLayout || !targetLayout || targetLayout.className) {
+    return undefined;
+  }
+  if (
+    sourceLayout.family === targetLayout.family &&
+    sourceLayout.representationName === targetLayout.representationName
+  ) {
+    return value;
+  }
+  if (targetLayout.family !== 'specialized_object' && targetLayout.family !== 'fallback_object') {
+    context.unsupportedKinds.add('object_projection_dynamic_target');
+    return undefined;
+  }
+  for (const field of targetLayout.fields) {
+    const sourceField = sourceLayout.fields.find((candidate) => candidate.name === field.name);
+    if (!sourceField || sourceField.representation !== field.representation) {
+      context.unsupportedKinds.add(`object_projection:${field.name}`);
+      return undefined;
+    }
+  }
+
+  const sourceObject = materializeObjectExpressionForRead(
+    value,
+    sourceLayout,
+    context,
+    'object_projection_source',
+  );
+  const statements: SemanticStatementIR[] = [...sourceObject.statements];
+  const fieldValueNames: string[] = [];
+  for (const field of targetLayout.fields) {
+    const fieldRead = objectPropertyReadValueFromLocal(
+      sourceObject.objectName,
+      field.name,
+      sourceLayout,
+      context,
+    );
+    if (!fieldRead || fieldRead.value.representation !== field.representation) {
+      context.unsupportedKinds.add(`object_projection:${field.name}`);
+      return undefined;
+    }
+    statements.push(...fieldRead.statements);
+    fieldValueNames.push(fieldRead.value.name);
+  }
+
+  const targetName = nextTempLocalName(context, 'object_projection');
+  addLocal(context, targetName, 'heap_ref');
+  context.objectLocals.set(targetName, targetLayout);
+  if (targetLayout.family === 'specialized_object') {
+    statements.push({
+      kind: 'specialized_object_new',
+      targetName,
+      representationName: targetLayout.representationName,
+      fieldValueNames,
+    });
+  } else {
+    statements.push({
+      kind: 'fallback_object_new',
+      targetName,
+      representationName: targetLayout.representationName,
+      entries: targetLayout.fields.map((field, index) => ({
+        key: field.name,
+        valueName: fieldValueNames[index]!,
+        valueType: field.representation,
+      })),
+    });
+  }
+  context.pendingStatements.push(...statements);
+  return { kind: 'local_get', name: targetName, representation: 'heap_ref' };
+}
+
+function lowerPromiseReactionHandlerExpression(
+  expression: SourceExpressionIR | undefined,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR {
+  if (!expression) {
+    return { kind: 'closure_null', representation: 'closure_ref' };
+  }
+  if (expression.kind === 'arrow_function') {
+    const closure = lowerArrowFunctionExpression(
+      expression,
+      promiseReactionClosureType(expression.params.length),
+      context,
+    );
+    if (closure) {
+      return closure;
+    }
+    return { kind: 'closure_null', representation: 'closure_ref' };
+  }
+  const value = lowerExpression(expression, context);
+  if (value.representation === 'closure_ref') {
+    return value;
+  }
+  context.unsupportedKinds.add('Promise.then:handler');
+  return { kind: 'closure_null', representation: 'closure_ref' };
+}
+
+function promiseFinallyHandlerFromCapture(): SemanticExpressionIR {
+  return {
+    kind: 'box_get',
+    box: localGetExpression('capture_handler_0', 'box_ref'),
+    valueType: 'closure_ref',
+    representation: 'closure_ref',
+  };
+}
+
+function promiseFinallyHandlerCapture(
+  handler: Extract<SemanticExpressionIR, { kind: 'closure_literal' }>,
+): Extract<SemanticExpressionIR, { kind: 'box_new' }> {
+  return {
+    kind: 'box_new',
+    value: handler,
+    valueType: 'closure_ref',
+    representation: 'box_ref',
+  };
+}
+
+function pushPromiseFinallyFulfilledClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  handler: Extract<SemanticExpressionIR, { kind: 'closure_literal' }>,
+): number {
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  context.moduleState.generatedFunctions.push({
+    name: `closure_source_promise_finally_fulfilled_${closureFunctionId}`,
+    exportName: '',
+    params: [
+      { name: 'capture_handler_0', representation: 'box_ref' },
+      { name: 'promise_value', representation: 'tagged_ref' },
+    ],
+    locals: [],
+    result: 'tagged_ref',
+    body: [
+      {
+        kind: 'expression',
+        value: {
+          kind: 'closure_call',
+          callee: promiseFinallyHandlerFromCapture(),
+          args: [],
+          signatureId: handler.signatureId,
+          representation: 'tagged_ref',
+        },
+      },
+      { kind: 'return', value: localGetExpression('promise_value', 'tagged_ref') },
+    ],
+    bodyStatus: 'emittable',
+    unsupportedBodyKinds: [],
+    runtimeFamilies: ['closure', 'finite_union'],
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 1,
+    closureCaptureValueTypes: ['closure_ref'],
+  });
+  return closureFunctionId;
+}
+
+function pushPromiseFinallyRejectedClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  handler: Extract<SemanticExpressionIR, { kind: 'closure_literal' }>,
+): number {
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  context.moduleState.generatedFunctions.push({
+    name: `closure_source_promise_finally_rejected_${closureFunctionId}`,
+    exportName: '',
+    params: [
+      { name: 'capture_handler_0', representation: 'box_ref' },
+      { name: 'promise_reason', representation: 'tagged_ref' },
+    ],
+    locals: [],
+    result: 'tagged_ref',
+    body: [
+      {
+        kind: 'expression',
+        value: {
+          kind: 'closure_call',
+          callee: promiseFinallyHandlerFromCapture(),
+          args: [],
+          signatureId: handler.signatureId,
+          representation: 'tagged_ref',
+        },
+      },
+      {
+        kind: 'return',
+        value: {
+          kind: 'tag_heap_object',
+          value: {
+            kind: 'call',
+            callee: SOUNDSCRIPT_PROMISE_REJECT_HELPER_NAME,
+            args: [localGetExpression('promise_reason', 'tagged_ref')],
+            representation: 'heap_ref',
+          },
+          representation: 'tagged_ref',
+        },
+      },
+    ],
+    bodyStatus: 'emittable',
+    unsupportedBodyKinds: [],
+    runtimeFamilies: ['closure', 'finite_union', 'promise'],
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 1,
+    closureCaptureValueTypes: ['closure_ref'],
+  });
+  return closureFunctionId;
+}
+
+function lowerPromiseThenCallExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'call_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (
+    expression.callee.kind !== 'property_access' ||
+    (
+      expression.callee.property !== 'then' &&
+      expression.callee.property !== 'catch' &&
+      expression.callee.property !== 'finally'
+    )
+  ) {
+    return undefined;
+  }
+  const methodName = expression.callee.property;
+  const aritySupported = methodName === 'then'
+    ? expression.args.length >= 1 && expression.args.length <= 2
+    : expression.args.length === 1;
+  if (!aritySupported) {
+    context.unsupportedKinds.add(`Promise.${methodName}:arity`);
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+  const receiver = lowerExpression(expression.callee.object, context);
+  if (receiver.representation !== 'heap_ref') {
+    context.unsupportedKinds.add(`Promise.${methodName}:receiver`);
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+  let onFulfilled: SemanticExpressionIR;
+  let onRejected: SemanticExpressionIR;
+  if (methodName === 'then') {
+    onFulfilled = lowerPromiseReactionHandlerExpression(expression.args[0], context);
+    onRejected = lowerPromiseReactionHandlerExpression(expression.args[1], context);
+  } else if (methodName === 'catch') {
+    onFulfilled = lowerPromiseReactionHandlerExpression(undefined, context);
+    onRejected = lowerPromiseReactionHandlerExpression(expression.args[0], context);
+  } else {
+    const onFinally = lowerPromiseReactionHandlerExpression(expression.args[0], context);
+    if (onFinally.kind !== 'closure_literal') {
+      context.unsupportedKinds.add('Promise.finally:handler');
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    const taggedValue = promiseReactionTaggedValueType();
+    const closureSignature = createClosureSignature(
+      context.moduleState,
+      [taggedValue],
+      taggedValue,
+    );
+    const fulfilledFunctionId = pushPromiseFinallyFulfilledClosure(
+      context,
+      closureSignature.id,
+      onFinally,
+    );
+    const rejectedFunctionId = pushPromiseFinallyRejectedClosure(
+      context,
+      closureSignature.id,
+      onFinally,
+    );
+    const handlerCapture = promiseFinallyHandlerCapture(onFinally);
+    onFulfilled = {
+      kind: 'closure_literal',
+      functionId: fulfilledFunctionId,
+      signatureId: closureSignature.id,
+      captures: [handlerCapture],
+      captureValueTypes: ['closure_ref'],
+      representation: 'closure_ref',
+    };
+    onRejected = {
+      kind: 'closure_literal',
+      functionId: rejectedFunctionId,
+      signatureId: closureSignature.id,
+      captures: [handlerCapture],
+      captureValueTypes: ['closure_ref'],
+      representation: 'closure_ref',
+    };
+  }
+  context.runtimeFamilies.add('promise');
+  context.runtimeFamilies.add('closure');
+  context.runtimeFamilies.add('finite_union');
+  return {
+    kind: 'call',
+    callee: SOUNDSCRIPT_PROMISE_THEN_HELPER_NAME,
+    args: [receiver, onFulfilled, onRejected],
+    representation: 'heap_ref',
+  };
+}
+
+function lowerPromiseRaceCallExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'call_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (
+    expression.callee.kind !== 'property_access' ||
+    expression.callee.object.kind !== 'identifier' ||
+    expression.callee.object.name !== 'Promise' ||
+    expression.callee.property !== 'race'
+  ) {
+    return undefined;
+  }
+  if (expression.args.length !== 1) {
+    context.unsupportedKinds.add('Promise.race:arity');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+  const [raceSource] = expression.args;
+  if (raceSource?.kind !== 'array_literal') {
+    context.unsupportedKinds.add('Promise.race:source');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+
+  const taggedValue = promiseReactionTaggedValueType();
+  const closureSignature = raceSource.elements.length > 0
+    ? createClosureSignature(context.moduleState, [taggedValue], taggedValue)
+    : undefined;
+  const fulfilledFunctionId = closureSignature
+    ? pushPromiseResolveIntoClosure(context, closureSignature.id)
+    : undefined;
+  const rejectedFunctionId = closureSignature
+    ? pushPromiseRejectIntoClosure(context, closureSignature.id)
+    : undefined;
+  const targetPromiseName = nextTempLocalName(context, 'promise_race_target');
+  addLocal(context, targetPromiseName, 'heap_ref');
+  const statements: SemanticStatementIR[] = [{
+    kind: 'local_set',
+    name: targetPromiseName,
+    value: {
+      kind: 'call',
+      callee: SOUNDSCRIPT_PROMISE_NEW_PENDING_HELPER_NAME,
+      args: [],
+      representation: 'heap_ref',
+    },
+  }];
+
+  for (const element of raceSource.elements) {
+    const source = lowerExpression(element, context);
+    const sourceStatements = takePendingStatements(context);
+    if (
+      source.representation !== 'heap_ref' ||
+      !closureSignature ||
+      fulfilledFunctionId === undefined ||
+      rejectedFunctionId === undefined
+    ) {
+      context.unsupportedKinds.add('Promise.race:element');
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    const sourceName = nextTempLocalName(context, 'promise_race_source');
+    addLocal(context, sourceName, 'heap_ref');
+    const targetCapture = promiseTargetCapture(targetPromiseName);
+    statements.push(
+      ...sourceStatements,
+      { kind: 'local_set', name: sourceName, value: source },
+      {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_THEN_HELPER_NAME,
+          args: [
+            localGetExpression(sourceName, 'heap_ref'),
+            {
+              kind: 'closure_literal',
+              functionId: fulfilledFunctionId,
+              signatureId: closureSignature.id,
+              captures: [targetCapture],
+              captureValueTypes: ['tagged_ref'],
+              representation: 'closure_ref',
+            },
+            {
+              kind: 'closure_literal',
+              functionId: rejectedFunctionId,
+              signatureId: closureSignature.id,
+              captures: [targetCapture],
+              captureValueTypes: ['tagged_ref'],
+              representation: 'closure_ref',
+            },
+          ],
+          representation: 'heap_ref',
+        },
+      },
+    );
+  }
+
+  context.pendingStatements.push(...statements);
+  context.runtimeFamilies.add('promise');
+  if (raceSource.elements.length > 0) {
+    context.runtimeFamilies.add('closure');
+    context.runtimeFamilies.add('finite_union');
+  }
+  return localGetExpression(targetPromiseName, 'heap_ref');
+}
+
+function lowerPromiseAllCallExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'call_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (
+    expression.callee.kind !== 'property_access' ||
+    expression.callee.object.kind !== 'identifier' ||
+    expression.callee.object.name !== 'Promise' ||
+    expression.callee.property !== 'all'
+  ) {
+    return undefined;
+  }
+  if (expression.args.length !== 1) {
+    context.unsupportedKinds.add('Promise.all:arity');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+  const [allSource] = expression.args;
+  if (allSource?.kind !== 'array_literal') {
+    context.unsupportedKinds.add('Promise.all:source');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+  const resultArrayType = promiseAllResultArrayType(context);
+  if (!resultArrayType) {
+    context.unsupportedKinds.add('Promise.all:result');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+
+  const resultsName = nextTempLocalName(context, 'promise_all_results');
+  addLocal(context, resultsName, resultArrayType);
+  const resultArraySet: SemanticStatementIR = {
+    kind: 'local_set',
+    name: resultsName,
+    value: promiseAllResultArrayLiteral(resultArrayType, allSource.elements.length, context),
+  };
+  context.runtimeFamilies.add('array');
+  context.runtimeFamilies.add('finite_union');
+  context.runtimeFamilies.add('promise');
+
+  if (allSource.elements.length === 0) {
+    context.pendingStatements.push(resultArraySet);
+    return {
+      kind: 'call',
+      callee: SOUNDSCRIPT_PROMISE_RESOLVE_HELPER_NAME,
+      args: [{
+        kind: 'tag_heap_object',
+        value: localGetExpression(resultsName, resultArrayType),
+        representation: 'tagged_ref',
+      }],
+      representation: 'heap_ref',
+    };
+  }
+
+  const taggedValue = promiseReactionTaggedValueType();
+  const closureSignature = createClosureSignature(context.moduleState, [taggedValue], taggedValue);
+  const fulfilledFunctionId = pushPromiseAllFulfilledClosure(
+    context,
+    closureSignature.id,
+    resultArrayType,
+  );
+  const rejectedFunctionId = pushPromiseRejectIntoClosure(context, closureSignature.id);
+  const targetPromiseName = nextTempLocalName(context, 'promise_all_target');
+  const remainingBoxName = nextTempLocalName(context, 'promise_all_remaining');
+  addLocal(context, targetPromiseName, 'heap_ref');
+  addLocal(context, remainingBoxName, 'box_ref');
+  const statements: SemanticStatementIR[] = [
+    resultArraySet,
+    {
+      kind: 'local_set',
+      name: targetPromiseName,
+      value: {
+        kind: 'call',
+        callee: SOUNDSCRIPT_PROMISE_NEW_PENDING_HELPER_NAME,
+        args: [],
+        representation: 'heap_ref',
+      },
+    },
+    {
+      kind: 'local_set',
+      name: remainingBoxName,
+      value: {
+        kind: 'box_new',
+        value: {
+          kind: 'number_literal',
+          value: allSource.elements.length,
+          representation: 'f64',
+        },
+        valueType: 'f64',
+        representation: 'box_ref',
+      },
+    },
+  ];
+
+  for (const [index, element] of allSource.elements.entries()) {
+    const source = lowerExpression(element, context);
+    const sourceStatements = takePendingStatements(context);
+    if (source.representation !== 'heap_ref') {
+      context.unsupportedKinds.add('Promise.all:element');
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    const sourceName = nextTempLocalName(context, 'promise_all_source');
+    addLocal(context, sourceName, 'heap_ref');
+    const targetCapture = promiseTargetCapture(targetPromiseName);
+    statements.push(
+      ...sourceStatements,
+      { kind: 'local_set', name: sourceName, value: source },
+      {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_THEN_HELPER_NAME,
+          args: [
+            localGetExpression(sourceName, 'heap_ref'),
+            {
+              kind: 'closure_literal',
+              functionId: fulfilledFunctionId,
+              signatureId: closureSignature.id,
+              captures: [
+                targetCapture,
+                {
+                  kind: 'box_new',
+                  value: localGetExpression(resultsName, resultArrayType),
+                  valueType: resultArrayType,
+                  representation: 'box_ref',
+                },
+                localGetExpression(remainingBoxName, 'box_ref'),
+                {
+                  kind: 'box_new',
+                  value: { kind: 'number_literal', value: index, representation: 'f64' },
+                  valueType: 'f64',
+                  representation: 'box_ref',
+                },
+              ],
+              captureValueTypes: [
+                'tagged_ref',
+                resultArrayType,
+                'box_ref',
+                'f64',
+              ],
+              representation: 'closure_ref',
+            },
+            {
+              kind: 'closure_literal',
+              functionId: rejectedFunctionId,
+              signatureId: closureSignature.id,
+              captures: [targetCapture],
+              captureValueTypes: ['tagged_ref'],
+              representation: 'closure_ref',
+            },
+          ],
+          representation: 'heap_ref',
+        },
+      },
+    );
+  }
+
+  context.pendingStatements.push(...statements);
+  context.runtimeFamilies.add('closure');
+  return localGetExpression(targetPromiseName, 'heap_ref');
+}
+
+function lowerPromiseStaticCallExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'call_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (
+    expression.callee.kind !== 'property_access' ||
+    expression.callee.object.kind !== 'identifier' ||
+    expression.callee.object.name !== 'Promise'
+  ) {
+    return undefined;
+  }
+  const promiseRaceCall = lowerPromiseRaceCallExpression(expression, context);
+  if (promiseRaceCall) {
+    return promiseRaceCall;
+  }
+  const promiseAllCall = lowerPromiseAllCallExpression(expression, context);
+  if (promiseAllCall) {
+    return promiseAllCall;
+  }
+  const helperName = expression.callee.property === 'resolve'
+    ? SOUNDSCRIPT_PROMISE_RESOLVE_HELPER_NAME
+    : expression.callee.property === 'reject'
+    ? SOUNDSCRIPT_PROMISE_REJECT_HELPER_NAME
+    : undefined;
+  if (!helperName) {
+    return undefined;
+  }
+  if (expression.args.length > 1) {
+    context.unsupportedKinds.add(`Promise.${expression.callee.property}:arity`);
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+  const rawValue = expression.args[0]
+    ? lowerExpression(expression.args[0], context)
+    : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+  const promiseValueType = promiseValueTypeForSemanticType(context.currentResultType);
+  if (helperName === SOUNDSCRIPT_PROMISE_RESOLVE_HELPER_NAME) {
+    const resolved = promiseResolveExpressionForValue(rawValue, promiseValueType, context);
+    if (!resolved) {
+      context.unsupportedKinds.add(`Promise.${expression.callee.property}:value`);
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    return resolved;
+  }
+  const value = adaptExpressionToSemanticType(rawValue, promiseValueType, context) ?? rawValue;
+  const taggedValue = taggedUnionExpressionForValue(value, context);
+  if (!taggedValue) {
+    context.unsupportedKinds.add(`Promise.${expression.callee.property}:value`);
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+  context.runtimeFamilies.add('promise');
+  return {
+    kind: 'call',
+    callee: helperName,
+    args: [taggedValue],
+    representation: 'heap_ref',
+  };
+}
+
+function promiseTargetCapture(
+  targetName: string,
+): Extract<SemanticExpressionIR, { kind: 'box_new' }> {
+  return {
+    kind: 'box_new',
+    value: {
+      kind: 'tag_heap_object',
+      value: localGetExpression(targetName, 'heap_ref'),
+      representation: 'tagged_ref',
+    },
+    valueType: 'tagged_ref',
+    representation: 'box_ref',
+  };
+}
+
+function promiseTargetFromCapture(): SemanticExpressionIR {
+  return {
+    kind: 'box_get',
+    box: localGetExpression('capture_target_0', 'box_ref'),
+    valueType: 'tagged_ref',
+    representation: 'tagged_ref',
+  };
+}
+
+function pushPromiseRejectIntoClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+): number {
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  context.moduleState.generatedFunctions.push({
+    name: `closure_source_async_await_rejected_${closureFunctionId}`,
+    exportName: '',
+    params: [
+      { name: 'capture_target_0', representation: 'box_ref' },
+      { name: 'promise_reason', representation: 'tagged_ref' },
+    ],
+    locals: [],
+    result: 'tagged_ref',
+    body: [
+      {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_REJECT_INTO_HELPER_NAME,
+          args: [
+            promiseTargetFromCapture(),
+            localGetExpression('promise_reason', 'tagged_ref'),
+          ],
+          representation: 'tagged_ref',
+        },
+      },
+      { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+    ],
+    bodyStatus: 'emittable',
+    unsupportedBodyKinds: [],
+    runtimeFamilies: ['finite_union', 'promise'],
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 1,
+    closureCaptureValueTypes: ['tagged_ref'],
+  });
+  return closureFunctionId;
+}
+
+function pushPromiseRejectIntoClosureWithFinally(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  finallyStatements: readonly SourceStatementIR[],
+  captures: readonly SourceAsyncCapture[],
+  finallyReturnStatement?: Extract<SourceStatementIR, { kind: 'return' }>,
+  finallyThrowStatement?: Extract<SourceStatementIR, { kind: 'throw' }>,
+): number | undefined {
+  if (sourceStatementsContainControlTransfer(finallyStatements)) {
+    context.unsupportedKinds.add('async_await_finally_control_flow');
+    return undefined;
+  }
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  const closureContext = createAsyncAwaitContinuationContext(
+    context,
+    `closure_source_async_await_rejected_finally_${closureFunctionId}`,
+    captures,
+  );
+  const body: SemanticStatementIR[] = [
+    ...finallyStatements.flatMap((statement) => [...lowerStatement(statement, closureContext)]),
+    ...takePendingStatements(closureContext),
+  ];
+  if (finallyReturnStatement) {
+    const finallyReturnValue = finallyReturnStatement.expression
+      ? lowerExpression(finallyReturnStatement.expression, closureContext)
+      : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+    const taggedFinallyReturn = taggedUnionExpressionForValue(finallyReturnValue, closureContext);
+    if (!taggedFinallyReturn) {
+      context.unsupportedKinds.add('async_await_return_value');
+      return undefined;
+    }
+    body.push({
+      kind: 'expression',
+      value: {
+        kind: 'call',
+        callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+        args: [promiseTargetFromCapture(), taggedFinallyReturn],
+        representation: 'tagged_ref',
+      },
+    });
+  } else if (finallyThrowStatement) {
+    const finallyThrowValue = lowerExpression(finallyThrowStatement.expression, closureContext);
+    const taggedFinallyThrow = taggedUnionExpressionForValue(finallyThrowValue, closureContext);
+    if (!taggedFinallyThrow) {
+      context.unsupportedKinds.add('async_await_throw_value');
+      return undefined;
+    }
+    body.push({
+      kind: 'expression',
+      value: {
+        kind: 'call',
+        callee: SOUNDSCRIPT_PROMISE_REJECT_INTO_HELPER_NAME,
+        args: [promiseTargetFromCapture(), taggedFinallyThrow],
+        representation: 'tagged_ref',
+      },
+    });
+  } else {
+    body.push({
+      kind: 'expression',
+      value: {
+        kind: 'call',
+        callee: SOUNDSCRIPT_PROMISE_REJECT_INTO_HELPER_NAME,
+        args: [
+          promiseTargetFromCapture(),
+          localGetExpression('promise_reason', 'tagged_ref'),
+        ],
+        representation: 'tagged_ref',
+      },
+    });
+  }
+  body.push({ kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } });
+  const unsupportedBodyKinds = [...closureContext.unsupportedKinds].sort();
+  context.moduleState.generatedFunctions.push({
+    name: closureContext.functionName,
+    exportName: '',
+    params: [
+      { name: 'capture_target_0', representation: 'box_ref' },
+      ...captures.map((capture) => ({
+        name: capture.name,
+        representation: 'box_ref' as const,
+      })),
+      { name: 'promise_reason', representation: 'tagged_ref' },
+    ],
+    locals: closureContext.locals,
+    result: 'tagged_ref',
+    body,
+    bodyStatus: unsupportedBodyKinds.length === 0 ? 'emittable' : 'stub',
+    unsupportedBodyKinds,
+    runtimeFamilies: [...new Set([...closureContext.runtimeFamilies])].sort(),
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 1 + captures.length,
+    closureCaptureValueTypes: [
+      'tagged_ref',
+      ...captures.map((capture) => capture.valueType),
+    ],
+  });
+  return closureFunctionId;
+}
+
+function createAsyncCompletionNames(
+  context: FunctionLoweringContext,
+  prefix: string,
+): AsyncCompletionNames {
+  const kindName = nextTempLocalName(context, `${prefix}_completion_kind`);
+  const valueName = nextTempLocalName(context, `${prefix}_completion_value`);
+  addLocal(context, kindName, 'i32');
+  addLocal(context, valueName, 'tagged_ref');
+  return { kindName, valueName };
+}
+
+function initAsyncCompletionStatements(names: AsyncCompletionNames): SemanticStatementIR[] {
+  return [
+    {
+      kind: 'local_set',
+      name: names.kindName,
+      value: booleanLiteralExpression(false),
+    },
+    {
+      kind: 'local_set',
+      name: names.valueName,
+      value: { kind: 'undefined_literal', representation: 'tagged_ref' },
+    },
+  ];
+}
+
+function setAsyncCompletionReturnStatements(
+  names: AsyncCompletionNames,
+  value: SemanticExpressionIR,
+): SemanticStatementIR[] {
+  return [
+    { kind: 'local_set', name: names.valueName, value },
+    {
+      kind: 'local_set',
+      name: names.kindName,
+      value: booleanLiteralExpression(true),
+    },
+  ];
+}
+
+function setAsyncCompletionThrowStatements(
+  names: AsyncCompletionNames,
+  value: SemanticExpressionIR,
+): SemanticStatementIR[] {
+  return [
+    { kind: 'local_set', name: names.valueName, value },
+    {
+      kind: 'local_set',
+      name: names.kindName,
+      value: booleanLiteralExpression(true),
+    },
+  ];
+}
+
+function asyncCompletionDispatchStatements(
+  names: AsyncCompletionNames,
+): SemanticStatementIR[] {
+  const isReturn = localGetExpression(names.kindName, 'i32');
+  return [
+    {
+      kind: 'if',
+      condition: isReturn,
+      thenBody: [{
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+          args: [
+            promiseTargetFromCapture(),
+            localGetExpression(names.valueName, 'tagged_ref'),
+          ],
+          representation: 'tagged_ref',
+        },
+      }, {
+        kind: 'return',
+        value: { kind: 'undefined_literal', representation: 'tagged_ref' },
+      }],
+      elseBody: [],
+    },
+    {
+      kind: 'expression',
+      value: {
+        kind: 'call',
+        callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+        args: [
+          promiseTargetFromCapture(),
+          localGetExpression(names.valueName, 'tagged_ref'),
+        ],
+        representation: 'tagged_ref',
+      },
+    },
+    { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+  ];
+}
+
+function pushAsyncCompletionFinallyDispatchClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  finallyBlock: readonly SourceStatementIR[],
+  finallyReturnStatement: Extract<SourceStatementIR, { kind: 'return' }> | undefined,
+  finallyThrowStatement: Extract<SourceStatementIR, { kind: 'throw' }> | undefined,
+  completion: AsyncCompletionNames,
+  captures: readonly SourceAsyncCapture[],
+): number | undefined {
+  if (
+    finallyReturnStatement || finallyThrowStatement
+      ? sourceStatementsContainControlTransfer(
+        finallyReturnStatement
+          ? finallyBlock.filter((s) => s !== finallyReturnStatement)
+          : finallyThrowStatement
+          ? finallyBlock.filter((s) => s !== finallyThrowStatement)
+          : finallyBlock,
+      )
+      : sourceStatementsContainControlTransfer(finallyBlock)
+  ) {
+    context.unsupportedKinds.add('async_await_finally_control_flow');
+    return undefined;
+  }
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  const closureContext = createAsyncAwaitContinuationContext(
+    context,
+    `closure_source_async_await_finally_dispatch_${closureFunctionId}`,
+    captures,
+  );
+  addLocal(closureContext, completion.kindName, 'i32');
+  addLocal(closureContext, completion.valueName, 'tagged_ref');
+  const body: SemanticStatementIR[] = [
+    {
+      kind: 'local_set',
+      name: completion.kindName,
+      value: {
+        kind: 'box_get',
+        box: localGetExpression(completion.kindName, 'box_ref'),
+        valueType: 'i32',
+        representation: 'i32',
+      },
+    },
+    {
+      kind: 'local_set',
+      name: completion.valueName,
+      value: {
+        kind: 'box_get',
+        box: localGetExpression(completion.valueName, 'box_ref'),
+        valueType: 'tagged_ref',
+        representation: 'tagged_ref',
+      },
+    },
+  ];
+  if (finallyReturnStatement) {
+    const leadingFinallyStatements = finallyBlock.filter((s) => s !== finallyReturnStatement);
+    body.push(
+      ...leadingFinallyStatements.flatMap((s) => [...lowerStatement(s, closureContext)]),
+    );
+    const returnValue = finallyReturnStatement.expression
+      ? lowerExpression(finallyReturnStatement.expression, closureContext)
+      : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+    const taggedValue = taggedUnionExpressionForValue(returnValue, closureContext);
+    if (!taggedValue) {
+      context.unsupportedKinds.add('async_await_return_value');
+      return undefined;
+    }
+    body.push(
+      ...takePendingStatements(closureContext),
+      { kind: 'local_set', name: completion.valueName, value: taggedValue },
+      {
+        kind: 'local_set',
+        name: completion.kindName,
+        value: booleanLiteralExpression(true),
+      },
+    );
+  } else if (finallyThrowStatement) {
+    const leadingFinallyStatements = finallyBlock.filter((s) => s !== finallyThrowStatement);
+    body.push(
+      ...leadingFinallyStatements.flatMap((s) => [...lowerStatement(s, closureContext)]),
+    );
+    const throwValue = lowerExpression(finallyThrowStatement.expression, closureContext);
+    const taggedValue = taggedUnionExpressionForValue(throwValue, closureContext);
+    if (!taggedValue) {
+      context.unsupportedKinds.add('async_await_throw_value');
+      return undefined;
+    }
+    body.push(
+      ...takePendingStatements(closureContext),
+      { kind: 'local_set', name: completion.valueName, value: taggedValue },
+      {
+        kind: 'local_set',
+        name: completion.kindName,
+        value: booleanLiteralExpression(true),
+      },
+    );
+  } else {
+    body.push(
+      ...finallyBlock.flatMap((s) => [...lowerStatement(s, closureContext)]),
+    );
+  }
+  body.push(
+    {
+      kind: 'box_set',
+      box: localGetExpression(completion.kindName, 'box_ref'),
+      value: localGetExpression(completion.kindName, 'i32'),
+      valueType: 'i32',
+    },
+    {
+      kind: 'box_set',
+      box: localGetExpression(completion.valueName, 'box_ref'),
+      value: localGetExpression(completion.valueName, 'tagged_ref'),
+      valueType: 'tagged_ref',
+    },
+    { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+  );
+  const unsupportedBodyKinds = [...closureContext.unsupportedKinds].sort();
+  context.moduleState.generatedFunctions.push({
+    name: closureContext.functionName,
+    exportName: '',
+    params: [
+      { name: 'capture_target_0', representation: 'box_ref' },
+      ...captures.map((capture) => ({
+        name: capture.name,
+        representation: 'box_ref' as const,
+      })),
+      { name: completion.kindName, representation: 'box_ref' },
+      { name: completion.valueName, representation: 'box_ref' },
+    ],
+    locals: closureContext.locals,
+    result: 'tagged_ref',
+    body,
+    bodyStatus: unsupportedBodyKinds.length === 0 ? 'emittable' : 'stub',
+    unsupportedBodyKinds,
+    runtimeFamilies: [...new Set([...closureContext.runtimeFamilies])].sort(),
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 3 + captures.length,
+    closureCaptureValueTypes: [
+      'tagged_ref',
+      ...captures.map((capture) => capture.valueType),
+      'i32',
+      'tagged_ref',
+    ],
+  });
+  return closureFunctionId;
+}
+
+function pushPromiseCatchIntoClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  catchInfo: NonNullable<SourceAwaitContinuationOptions['rejectionCatch']>,
+  captures: readonly SourceAsyncCapture[],
+  options?: SourceAwaitContinuationOptions,
+): number | undefined {
+  if (
+    catchInfo.catchBlock.some((statement) => sourceStatementContainsAwaitExpression(statement)) ||
+    catchInfo.afterStatements.some((statement) => sourceStatementContainsAwaitExpression(statement))
+  ) {
+    context.unsupportedKinds.add('async_await_catch_control_flow');
+    return undefined;
+  }
+  const catchReturnStatement = catchInfo.catchReturnStatement;
+  const catchThrowStatement = catchInfo.catchThrowStatement;
+  const catchLeadingStatements = catchReturnStatement
+    ? catchInfo.catchBlock.filter((s) => s !== catchReturnStatement)
+    : catchThrowStatement
+    ? catchInfo.catchBlock.filter((s) => s !== catchThrowStatement)
+    : catchInfo.catchBlock;
+  if (
+    (catchReturnStatement || catchThrowStatement)
+      ? sourceStatementsContainControlTransfer(catchLeadingStatements)
+      : sourceStatementsContainControlTransfer(catchInfo.catchBlock)
+  ) {
+    context.unsupportedKinds.add('async_await_catch_control_flow');
+    return undefined;
+  }
+  if (catchInfo.catchBinding && catchInfo.catchBinding.kind !== 'identifier_binding') {
+    context.unsupportedKinds.add('async_await_catch_binding');
+    return undefined;
+  }
+  const finallyBlock = options?.finallyBlock;
+  const finallyReturnStatement = options?.finallyReturnStatement;
+  const finallyThrowStatement = options?.finallyThrowStatement;
+  if (
+    finallyBlock &&
+    (finallyReturnStatement || finallyThrowStatement
+      ? sourceStatementsContainControlTransfer(
+        finallyReturnStatement
+          ? finallyBlock.filter((s) => s !== finallyReturnStatement)
+          : finallyThrowStatement
+          ? finallyBlock.filter((s) => s !== finallyThrowStatement)
+          : finallyBlock,
+      )
+      : sourceStatementsContainControlTransfer(finallyBlock))
+  ) {
+    context.unsupportedKinds.add('async_await_finally_control_flow');
+    return undefined;
+  }
+  const catchBindingName = catchInfo.catchBinding?.kind === 'identifier_binding'
+    ? catchInfo.catchBinding.name
+    : undefined;
+  const catchBindingUsed = catchBindingName
+    ? (() => {
+      const names: string[] = [];
+      catchInfo.catchBlock.forEach((statement) => {
+        collectSourceStatementIdentifierReads(statement, names);
+        collectSourceStatementAssignedNames(statement, names);
+      });
+      return names.includes(catchBindingName);
+    })()
+    : false;
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  const closureContext = createAsyncAwaitContinuationContext(
+    context,
+    `closure_source_async_await_rejected_catch_${closureFunctionId}`,
+    captures,
+  );
+  if (catchBindingName && catchBindingUsed) {
+    addLocal(closureContext, catchBindingName, 'tagged_ref');
+    closureContext.localDeclarationKinds.set(catchBindingName, 'let');
+  }
+  const catchBindingStatements: SemanticStatementIR[] = catchBindingName && catchBindingUsed
+    ? [{
+      kind: 'local_set',
+      name: catchBindingName,
+      value: localGetExpression('promise_reason', 'tagged_ref'),
+    }]
+    : [];
+  const catchBody = catchLeadingStatements.flatMap((statement) => [
+    ...lowerStatement(statement, closureContext),
+  ]);
+  const body: SemanticStatementIR[] = [
+    ...catchBindingStatements,
+    ...catchBody,
+  ];
+  if (catchReturnStatement) {
+    const returnValue = catchReturnStatement.expression
+      ? lowerExpression(catchReturnStatement.expression, closureContext)
+      : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+    const taggedReturnValue = taggedUnionExpressionForValue(returnValue, closureContext);
+    if (!taggedReturnValue) {
+      context.unsupportedKinds.add('async_await_catch_return_value');
+      return undefined;
+    }
+    body.push(...takePendingStatements(closureContext));
+    if (finallyBlock) {
+      body.push(
+        { kind: 'local_set', name: 'promise_value', value: taggedReturnValue },
+        ...finallyBlock.flatMap((s) => [...lowerStatement(s, closureContext)]),
+      );
+      const finallyTagged = handleFinallyCompletionOverride(closureContext, finallyBlock);
+      if (finallyTagged !== undefined) {
+        if (finallyTagged === false) {
+          context.unsupportedKinds.add('async_await_finally_control_flow');
+          return undefined;
+        }
+        body.push(...finallyTagged);
+      } else {
+        body.push({
+          kind: 'expression',
+          value: {
+            kind: 'call',
+            callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+            args: [
+              promiseTargetFromCapture(),
+              localGetExpression('promise_value', 'tagged_ref'),
+            ],
+            representation: 'tagged_ref',
+          },
+        });
+      }
+    } else {
+      body.push({
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+          args: [
+            promiseTargetFromCapture(),
+            taggedReturnValue,
+          ],
+          representation: 'tagged_ref',
+        },
+      });
+    }
+  } else if (catchThrowStatement) {
+    if (catchThrowStatement.expression) {
+      const throwValue = lowerExpression(catchThrowStatement.expression, closureContext);
+      const taggedThrowValue = taggedUnionExpressionForValue(throwValue, closureContext);
+      if (!taggedThrowValue) {
+        context.unsupportedKinds.add('async_await_catch_throw_value');
+        return undefined;
+      }
+      body.push(...takePendingStatements(closureContext));
+      if (finallyBlock) {
+        body.push(
+          ...finallyBlock.flatMap((s) => [...lowerStatement(s, closureContext)]),
+        );
+        body.push({
+          kind: 'expression',
+          value: {
+            kind: 'call',
+            callee: SOUNDSCRIPT_PROMISE_REJECT_INTO_HELPER_NAME,
+            args: [
+              promiseTargetFromCapture(),
+              taggedThrowValue,
+            ],
+            representation: 'tagged_ref',
+          },
+        });
+      } else {
+        body.push({
+          kind: 'expression',
+          value: {
+            kind: 'call',
+            callee: SOUNDSCRIPT_PROMISE_REJECT_INTO_HELPER_NAME,
+            args: [
+              promiseTargetFromCapture(),
+              taggedThrowValue,
+            ],
+            representation: 'tagged_ref',
+          },
+        });
+      }
+    } else {
+      body.push(...takePendingStatements(closureContext));
+      if (finallyBlock) {
+        body.push(
+          ...finallyBlock.flatMap((s) => [...lowerStatement(s, closureContext)]),
+        );
+      }
+      body.push({
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_REJECT_INTO_HELPER_NAME,
+          args: [
+            promiseTargetFromCapture(),
+            localGetExpression('promise_reason', 'tagged_ref'),
+          ],
+          representation: 'tagged_ref',
+        },
+      });
+    }
+  } else {
+    if (finallyBlock) {
+      body.push(
+        ...finallyBlock.flatMap((s) => [...lowerStatement(s, closureContext)]),
+      );
+      const handleResult = handleFinallyCompletionOverride(closureContext, finallyBlock);
+      if (handleResult !== undefined) {
+        if (handleResult === false) {
+          context.unsupportedKinds.add('async_await_finally_control_flow');
+          return undefined;
+        }
+        body.push(...handleResult);
+      } else {
+        const resolveStatements = lowerAsyncPromiseTargetResolution(
+          catchInfo.afterStatements,
+          catchInfo.returnStatement,
+          closureContext,
+        );
+        if (!resolveStatements) {
+          context.unsupportedKinds.add('async_await_catch_return');
+          return undefined;
+        }
+        body.push(...resolveStatements);
+      }
+    } else {
+      const resolveStatements = lowerAsyncPromiseTargetResolution(
+        catchInfo.afterStatements,
+        catchInfo.returnStatement,
+        closureContext,
+      );
+      if (!resolveStatements) {
+        context.unsupportedKinds.add('async_await_catch_return');
+        return undefined;
+      }
+      body.push(...resolveStatements);
+    }
+  }
+  body.push({ kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } });
+  const unsupportedBodyKinds = [...closureContext.unsupportedKinds].sort();
+  context.moduleState.generatedFunctions.push({
+    name: closureContext.functionName,
+    exportName: '',
+    params: [
+      { name: 'capture_target_0', representation: 'box_ref' },
+      ...captures.map((capture) => ({
+        name: capture.name,
+        representation: 'box_ref' as const,
+      })),
+      { name: 'promise_reason', representation: 'tagged_ref' },
+    ],
+    locals: closureContext.locals,
+    result: 'tagged_ref',
+    body,
+    bodyStatus: unsupportedBodyKinds.length === 0 ? 'emittable' : 'stub',
+    unsupportedBodyKinds,
+    runtimeFamilies: [...new Set([...closureContext.runtimeFamilies])].sort(),
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 1 + captures.length,
+    closureCaptureValueTypes: [
+      'tagged_ref',
+      ...captures.map((capture) => capture.valueType),
+    ],
+  });
+  return closureFunctionId;
+}
+
+function handleFinallyCompletionOverride(
+  context: FunctionLoweringContext,
+  finallyBlock: readonly SourceStatementIR[],
+): readonly SemanticStatementIR[] | false | undefined {
+  const finallyReturnIndex = finallyBlock.findIndex((s) => s.kind === 'return');
+  const finallyThrowIndex = finallyBlock.findIndex((s) => s.kind === 'throw');
+  if (finallyReturnIndex < 0 && finallyThrowIndex < 0) {
+    return undefined;
+  }
+  if (finallyReturnIndex >= 0) {
+    const returnStatement = finallyBlock[finallyReturnIndex] as Extract<
+      SourceStatementIR,
+      { kind: 'return' }
+    >;
+    const leadingStatements = finallyBlock.slice(0, finallyReturnIndex);
+    if (sourceStatementsContainControlTransfer(leadingStatements)) {
+      return false;
+    }
+    const trailingStatements = finallyBlock.slice(finallyReturnIndex + 1);
+    const overrideBody: SemanticStatementIR[] = [
+      ...leadingStatements.flatMap((s) => [...lowerStatement(s, context)]),
+    ];
+    const returnValue = returnStatement.expression
+      ? lowerExpression(returnStatement.expression, context)
+      : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+    const taggedValue = taggedUnionExpressionForValue(returnValue, context);
+    if (!taggedValue) {
+      return false;
+    }
+    overrideBody.push(
+      ...takePendingStatements(context),
+      {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+          args: [
+            promiseTargetFromCapture(),
+            taggedValue,
+          ],
+          representation: 'tagged_ref',
+        },
+      },
+    );
+    overrideBody.push(
+      ...trailingStatements.flatMap((s) => [...lowerStatement(s, context)]),
+    );
+    return overrideBody;
+  }
+  if (finallyThrowIndex >= 0) {
+    const throwStatement = finallyBlock[finallyThrowIndex] as Extract<
+      SourceStatementIR,
+      { kind: 'throw' }
+    >;
+    const leadingStatements = finallyBlock.slice(0, finallyThrowIndex);
+    if (sourceStatementsContainControlTransfer(leadingStatements)) {
+      return false;
+    }
+    const trailingStatements = finallyBlock.slice(finallyThrowIndex + 1);
+    const overrideBody: SemanticStatementIR[] = [
+      ...leadingStatements.flatMap((s) => [...lowerStatement(s, context)]),
+    ];
+    const throwValue = lowerExpression(throwStatement.expression, context);
+    const taggedValue = taggedUnionExpressionForValue(throwValue, context);
+    if (!taggedValue) {
+      return false;
+    }
+    overrideBody.push(
+      ...takePendingStatements(context),
+      {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_REJECT_INTO_HELPER_NAME,
+          args: [
+            promiseTargetFromCapture(),
+            taggedValue,
+          ],
+          representation: 'tagged_ref',
+        },
+      },
+    );
+    overrideBody.push(
+      ...trailingStatements.flatMap((s) => [...lowerStatement(s, context)]),
+    );
+    return overrideBody;
+  }
+  return undefined;
+}
+
+function pushPromiseResolveIntoClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+): number {
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  context.moduleState.generatedFunctions.push({
+    name: `closure_source_promise_fulfilled_${closureFunctionId}`,
+    exportName: '',
+    params: [
+      { name: 'capture_target_0', representation: 'box_ref' },
+      { name: 'promise_value', representation: 'tagged_ref' },
+    ],
+    locals: [],
+    result: 'tagged_ref',
+    body: [
+      {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+          args: [
+            promiseTargetFromCapture(),
+            localGetExpression('promise_value', 'tagged_ref'),
+          ],
+          representation: 'tagged_ref',
+        },
+      },
+      { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+    ],
+    bodyStatus: 'emittable',
+    unsupportedBodyKinds: [],
+    runtimeFamilies: ['finite_union', 'promise'],
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 1,
+    closureCaptureValueTypes: ['tagged_ref'],
+  });
+  return closureFunctionId;
+}
+
+function promiseAllResultArrayType(
+  context: FunctionLoweringContext,
+): PromiseAllSupportedArrayValueType | undefined {
+  const promiseValueType = promiseValueTypeForSemanticType(context.currentResultType);
+  if (promiseValueType?.kind !== 'array') {
+    return undefined;
+  }
+  const arrayType = arrayRepresentationForSemanticType(promiseValueType);
+  switch (arrayType) {
+    case 'owned_heap_array_ref':
+    case 'owned_array_ref':
+    case 'owned_number_array_ref':
+    case 'owned_boolean_array_ref':
+    case 'owned_tagged_array_ref':
+      return arrayType;
+    default:
+      return undefined;
+  }
+}
+
+function promiseAllCaptureGet(
+  name: string,
+  valueType: CompilerValueType,
+): SemanticExpressionIR {
+  return {
+    kind: 'box_get',
+    box: localGetExpression(name, 'box_ref'),
+    valueType,
+    representation: valueType,
+  };
+}
+
+function promiseAllResultArrayLiteral(
+  arrayType: PromiseAllSupportedArrayValueType,
+  length: number,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR {
+  switch (arrayType) {
+    case 'owned_heap_array_ref':
+      return {
+        kind: 'owned_heap_array_literal',
+        elements: Array.from(
+          { length },
+          () => ({ kind: 'heap_null', representation: 'heap_ref' } as const),
+        ),
+        representation: 'owned_heap_array_ref',
+      };
+    case 'owned_array_ref':
+      context.runtimeFamilies.add('string');
+      return {
+        kind: 'owned_string_array_literal',
+        elements: Array.from(
+          { length },
+          () => ({
+            kind: 'owned_string_literal',
+            literalId: getStringLiteralId(context, JSON.stringify('')),
+            representation: 'owned_string_ref',
+          } as const),
+        ),
+        representation: 'owned_array_ref',
+      };
+    case 'owned_number_array_ref':
+      return {
+        kind: 'owned_number_array_literal',
+        elements: Array.from(
+          { length },
+          () => ({ kind: 'number_literal', value: 0, representation: 'f64' } as const),
+        ),
+        representation: 'owned_number_array_ref',
+      };
+    case 'owned_boolean_array_ref':
+      return {
+        kind: 'owned_boolean_array_literal',
+        elements: Array.from(
+          { length },
+          () => ({ kind: 'boolean_literal', value: false, representation: 'i32' } as const),
+        ),
+        representation: 'owned_boolean_array_ref',
+      };
+    case 'owned_tagged_array_ref':
+      return {
+        kind: 'owned_tagged_array_literal',
+        elements: Array.from(
+          { length },
+          () => ({ kind: 'undefined_literal', representation: 'tagged_ref' } as const),
+        ),
+        representation: 'owned_tagged_array_ref',
+      };
+  }
+}
+
+function promiseAllValueFromTagged(
+  taggedValue: SemanticExpressionIR,
+  arrayType: PromiseAllSupportedArrayValueType,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR {
+  switch (arrayType) {
+    case 'owned_heap_array_ref':
+      return untagUnionExpressionForRepresentation(taggedValue, 'heap_ref', context)!;
+    case 'owned_array_ref':
+      return untagUnionExpressionForRepresentation(taggedValue, 'owned_string_ref', context)!;
+    case 'owned_number_array_ref':
+      return untagUnionExpressionForRepresentation(taggedValue, 'f64', context)!;
+    case 'owned_boolean_array_ref':
+      return untagUnionExpressionForRepresentation(taggedValue, 'i32', context)!;
+    case 'owned_tagged_array_ref':
+      return taggedValue;
+  }
+}
+
+function promiseAllResultArraySetStatement(
+  arrayType: PromiseAllSupportedArrayValueType,
+  array: SemanticExpressionIR,
+  index: SemanticExpressionIR,
+  taggedValue: SemanticExpressionIR,
+  context: FunctionLoweringContext,
+): SemanticStatementIR {
+  const value = promiseAllValueFromTagged(taggedValue, arrayType, context);
+  switch (arrayType) {
+    case 'owned_heap_array_ref':
+      return { kind: 'owned_heap_array_set', array, index, value };
+    case 'owned_array_ref':
+      return { kind: 'owned_string_array_set', array, index, value };
+    case 'owned_number_array_ref':
+      return { kind: 'owned_number_array_set', array, index, value };
+    case 'owned_boolean_array_ref':
+      return { kind: 'owned_boolean_array_set', array, index, value };
+    case 'owned_tagged_array_ref':
+      return { kind: 'owned_tagged_array_set', array, index, value };
+  }
+}
+
+function pushPromiseAllFulfilledClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  resultArrayType: PromiseAllSupportedArrayValueType,
+): number {
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  const remainingLocalName = 'remaining_after_settle';
+  const resultsArray = promiseAllCaptureGet('capture_results_1', resultArrayType);
+  const remainingValue = promiseAllCaptureGet('capture_remaining_2', 'f64');
+  const indexValue = promiseAllCaptureGet('capture_index_3', 'f64');
+  const resultSetStatement = promiseAllResultArraySetStatement(
+    resultArrayType,
+    resultsArray,
+    indexValue,
+    localGetExpression('promise_value', 'tagged_ref'),
+    context,
+  );
+  context.moduleState.generatedFunctions.push({
+    name: `closure_source_promise_all_fulfilled_${closureFunctionId}`,
+    exportName: '',
+    params: [
+      { name: 'capture_target_0', representation: 'box_ref' },
+      { name: 'capture_results_1', representation: 'box_ref' },
+      { name: 'capture_remaining_2', representation: 'box_ref' },
+      { name: 'capture_index_3', representation: 'box_ref' },
+      { name: 'promise_value', representation: 'tagged_ref' },
+    ],
+    locals: [{ name: remainingLocalName, representation: 'f64' }],
+    result: 'tagged_ref',
+    body: [
+      resultSetStatement,
+      {
+        kind: 'local_set',
+        name: remainingLocalName,
+        value: {
+          kind: 'binary',
+          op: 'f64.sub',
+          left: remainingValue,
+          right: { kind: 'number_literal', value: 1, representation: 'f64' },
+          representation: 'f64',
+        },
+      },
+      {
+        kind: 'box_set',
+        box: localGetExpression('capture_remaining_2', 'box_ref'),
+        value: localGetExpression(remainingLocalName, 'f64'),
+        valueType: 'f64',
+      },
+      {
+        kind: 'if',
+        condition: {
+          kind: 'binary',
+          op: 'f64.eq',
+          left: localGetExpression(remainingLocalName, 'f64'),
+          right: { kind: 'number_literal', value: 0, representation: 'f64' },
+          representation: 'i32',
+        },
+        thenBody: [{
+          kind: 'expression',
+          value: {
+            kind: 'call',
+            callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+            args: [
+              promiseTargetFromCapture(),
+              {
+                kind: 'tag_heap_object',
+                value: resultsArray,
+                representation: 'tagged_ref',
+              },
+            ],
+            representation: 'tagged_ref',
+          },
+        }],
+        elseBody: [],
+      },
+      { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+    ],
+    bodyStatus: 'emittable',
+    unsupportedBodyKinds: [],
+    runtimeFamilies: ['array', 'finite_union', 'promise'],
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 4,
+    closureCaptureValueTypes: [
+      'tagged_ref',
+      resultArrayType,
+      'box_ref',
+      'f64',
+    ],
+  });
+  return closureFunctionId;
+}
+
+function unionTagForTypeofLiteral(text: string): number | undefined {
+  const unquoted = text.length >= 2 ? text.slice(1, -1) : text;
+  switch (unquoted) {
+    case 'number':
+      return 2;
+    case 'boolean':
+      return 1;
+    case 'string':
+      return 3;
+    case 'symbol':
+      return 5;
+    case 'bigint':
+      return 7;
+    case 'object':
+      return 4;
+    default:
+      return undefined;
   }
 }
 
@@ -341,6 +2304,156 @@ function lowerTypeofExpression(
   };
 }
 
+function sourceExpressionHasTaggedUnionRepresentation(
+  expression: SourceExpressionIR,
+  context: FunctionLoweringContext,
+): boolean {
+  switch (expression.kind) {
+    case 'identifier':
+      return context.localRepresentations.get(expression.name) === 'tagged_ref' ||
+        context.unionLocals.has(expression.name);
+    case 'call_expression':
+      return expression.callee.kind === 'identifier' &&
+        context.functionResultRepresentations.get(expression.callee.name) === 'tagged_ref';
+    case 'conditional_expression':
+      return sourceExpressionHasTaggedUnionRepresentation(expression.consequent, context) &&
+        sourceExpressionHasTaggedUnionRepresentation(expression.alternate, context);
+    default:
+      return false;
+  }
+}
+
+function lowerUnionBinaryExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'binary_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (expression.operator !== '===' && expression.operator !== '!==') {
+    return undefined;
+  }
+  const negated = expression.operator === '!==';
+  if (
+    expression.left.kind === 'unary_expression' &&
+    expression.left.operator === 'typeof' &&
+    expression.right.kind === 'literal' &&
+    expression.right.literalKind === 'string'
+  ) {
+    const tag = unionTagForTypeofLiteral(expression.right.text);
+    if (tag === undefined) {
+      return undefined;
+    }
+    if (!sourceExpressionHasTaggedUnionRepresentation(expression.left.operand, context)) {
+      return undefined;
+    }
+    const value = lowerExpression(expression.left.operand, context);
+    if (value.representation !== 'tagged_ref') {
+      return undefined;
+    }
+    context.runtimeFamilies.add('finite_union');
+    return { kind: 'tagged_has_tag', value, tag, negated, representation: 'i32' };
+  }
+  if (
+    expression.right.kind === 'unary_expression' &&
+    expression.right.operator === 'typeof' &&
+    expression.left.kind === 'literal' &&
+    expression.left.literalKind === 'string'
+  ) {
+    const tag = unionTagForTypeofLiteral(expression.left.text);
+    if (tag === undefined) {
+      return undefined;
+    }
+    if (!sourceExpressionHasTaggedUnionRepresentation(expression.right.operand, context)) {
+      return undefined;
+    }
+    const value = lowerExpression(expression.right.operand, context);
+    if (value.representation !== 'tagged_ref') {
+      return undefined;
+    }
+    context.runtimeFamilies.add('finite_union');
+    return { kind: 'tagged_has_tag', value, tag, negated, representation: 'i32' };
+  }
+  if (
+    expression.right.kind === 'literal' &&
+    expression.right.literalKind === 'null' &&
+    sourceExpressionHasTaggedUnionRepresentation(expression.left, context)
+  ) {
+    const value = lowerExpression(expression.left, context);
+    if (value.representation !== 'tagged_ref') {
+      return undefined;
+    }
+    context.runtimeFamilies.add('finite_union');
+    return {
+      kind: 'tagged_is_null',
+      value,
+      negated,
+      representation: 'i32',
+    };
+  }
+  if (
+    expression.left.kind === 'literal' &&
+    expression.left.literalKind === 'null' &&
+    sourceExpressionHasTaggedUnionRepresentation(expression.right, context)
+  ) {
+    const value = lowerExpression(expression.right, context);
+    if (value.representation !== 'tagged_ref') {
+      return undefined;
+    }
+    context.runtimeFamilies.add('finite_union');
+    return {
+      kind: 'tagged_is_null',
+      value,
+      negated,
+      representation: 'i32',
+    };
+  }
+  if (
+    expression.right.kind === 'literal' &&
+    expression.right.literalKind === 'undefined' &&
+    sourceExpressionHasTaggedUnionRepresentation(expression.left, context)
+  ) {
+    const value = lowerExpression(expression.left, context);
+    if (value.representation !== 'tagged_ref') {
+      return undefined;
+    }
+    context.runtimeFamilies.add('finite_union');
+    return {
+      kind: 'tagged_is_undefined',
+      value,
+      negated,
+      representation: 'i32',
+    };
+  }
+  if (
+    expression.left.kind === 'literal' &&
+    expression.left.literalKind === 'undefined' &&
+    sourceExpressionHasTaggedUnionRepresentation(expression.right, context)
+  ) {
+    const value = lowerExpression(expression.right, context);
+    if (value.representation !== 'tagged_ref') {
+      return undefined;
+    }
+    context.runtimeFamilies.add('finite_union');
+    return {
+      kind: 'tagged_is_undefined',
+      value,
+      negated,
+      representation: 'i32',
+    };
+  }
+  return undefined;
+}
+
+function lowerCallArguments(
+  args: readonly SourceExpressionIR[],
+  paramTypes: readonly SemanticTypeIR[] | undefined,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR[] {
+  return args.map((arg, index) => {
+    const value = lowerExpression(arg, context);
+    return projectObjectExpressionToSemanticType(arg, value, paramTypes?.[index], context) ??
+      adaptExpressionToSemanticType(value, paramTypes?.[index], context) ?? value;
+  });
+}
+
 function getStringLiteralId(context: FunctionLoweringContext, text: string): number {
   const unquoted = text.length >= 2 ? text.slice(1, -1) : text;
   const existing = context.stringLiteralIds.get(unquoted);
@@ -376,6 +2489,8 @@ function contextHasSourceBinding(context: FunctionLoweringContext, name: string)
     context.arrayLocals.has(name) ||
     context.closureLocals.has(name) ||
     context.constructorLocals.has(name) ||
+    context.mapLocals.has(name) ||
+    context.setLocals.has(name) ||
     context.boxedLocals.has(name);
 }
 
@@ -488,7 +2603,7 @@ function localTypeForBinding(
   return context.localTypesByKey.get(
     localTypeKey(
       binding.span.fileName,
-      context.functionName,
+      context.sourceFunctionName,
       binding.name,
       binding.span.start,
       binding.span.end,
@@ -589,25 +2704,17 @@ function arrayElementExpressionForInfo(
   return undefined;
 }
 
-function arrayElementSetStatementForLocal(
+function arrayElementSetStatementForExpression(
   context: FunctionLoweringContext,
-  objectName: string,
+  array: SemanticExpressionIR,
+  arrayLocal: SourceSemanticArrayLocal | undefined,
   index: SemanticExpressionIR,
   value: SemanticExpressionIR,
 ): SemanticStatementIR | undefined {
   if (index.representation !== 'f64') {
     return undefined;
   }
-  const arrayRepresentation = context.localRepresentations.get(objectName);
-  if (!arrayRepresentation) {
-    return undefined;
-  }
-  const array: SemanticExpressionIR = {
-    kind: 'local_get',
-    name: objectName,
-    representation: arrayRepresentation,
-  };
-  if (arrayRepresentation === 'owned_number_array_ref' && value.representation === 'f64') {
+  if (array.representation === 'owned_number_array_ref' && value.representation === 'f64') {
     context.runtimeFamilies.add('array');
     return {
       kind: 'owned_number_array_set',
@@ -616,9 +2723,8 @@ function arrayElementSetStatementForLocal(
       value,
     };
   }
-  const arrayLocal = context.arrayLocals.get(objectName);
   if (
-    arrayRepresentation === 'owned_array_ref' &&
+    array.representation === 'owned_array_ref' &&
     arrayLocal?.elementRepresentation === 'owned_string_ref' &&
     value.representation === 'owned_string_ref'
   ) {
@@ -631,7 +2737,7 @@ function arrayElementSetStatementForLocal(
       value,
     };
   }
-  if (arrayRepresentation === 'owned_boolean_array_ref' && value.representation === 'i32') {
+  if (array.representation === 'owned_boolean_array_ref' && value.representation === 'i32') {
     context.runtimeFamilies.add('array');
     return {
       kind: 'owned_boolean_array_set',
@@ -641,6 +2747,25 @@ function arrayElementSetStatementForLocal(
     };
   }
   return undefined;
+}
+
+function arrayElementSetStatementForLocal(
+  context: FunctionLoweringContext,
+  objectName: string,
+  index: SemanticExpressionIR,
+  value: SemanticExpressionIR,
+): SemanticStatementIR | undefined {
+  const arrayRepresentation = context.localRepresentations.get(objectName);
+  if (!arrayRepresentation) {
+    return undefined;
+  }
+  return arrayElementSetStatementForExpression(
+    context,
+    localGetExpression(objectName, arrayRepresentation),
+    context.arrayLocals.get(objectName),
+    index,
+    value,
+  );
 }
 
 function lowerBooleanLogicalExpression(
@@ -687,14 +2812,21 @@ function lowerConditionalExpression(
 ): SemanticExpressionIR | undefined {
   const condition = lowerExpression(expression.test, context);
   const conditionStatements = takePendingStatements(context);
-  const consequent = lowerExpression(expression.consequent, context);
+  let consequent = lowerExpression(expression.consequent, context);
   const consequentStatements = takePendingStatements(context);
-  const alternate = lowerExpression(expression.alternate, context);
+  let alternate = lowerExpression(expression.alternate, context);
   const alternateStatements = takePendingStatements(context);
-  if (
-    condition.representation !== 'i32' || consequent.representation !== alternate.representation
-  ) {
+  if (condition.representation !== 'i32') {
     return undefined;
+  }
+  if (consequent.representation !== alternate.representation) {
+    const taggedConsequent = taggedUnionExpressionForValue(consequent, context);
+    const taggedAlternate = taggedUnionExpressionForValue(alternate, context);
+    if (!taggedConsequent || !taggedAlternate) {
+      return undefined;
+    }
+    consequent = taggedConsequent;
+    alternate = taggedAlternate;
   }
   const resultName = nextTempLocalName(context, 'conditional');
   addLocal(context, resultName, consequent.representation);
@@ -877,6 +3009,45 @@ function compoundAssignmentBinaryOperator(operator: string): string | undefined 
   }
 }
 
+function lowerObjectLiteralExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'object_literal' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR {
+  const fieldValueNames: string[] = [];
+  const fields: { name: string; representation: CompilerValueType }[] = [];
+  const statements: SemanticStatementIR[] = [];
+  for (const property of expression.properties) {
+    if (property.computedName) {
+      context.unsupportedKinds.add('object_literal_computed');
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    const value = lowerExpression(property.value, context);
+    statements.push(...takePendingStatements(context));
+    const valueName = nextTempLocalName(context, `object_literal_${property.name}`);
+    addLocal(context, valueName, value.representation);
+    statements.push({ kind: 'local_set', name: valueName, value });
+    fieldValueNames.push(valueName);
+    fields.push({ name: property.name, representation: value.representation });
+  }
+
+  const objectName = nextTempLocalName(context, 'object_literal');
+  const objectLocal: SourceSemanticObjectLocal = {
+    family: 'specialized_object',
+    representationName: registerSpecializedObjectLayout(context, fields),
+    fields,
+  };
+  addLocal(context, objectName, 'heap_ref');
+  context.objectLocals.set(objectName, objectLocal);
+  context.pendingStatements.push(...statements, {
+    kind: 'specialized_object_new',
+    targetName: objectName,
+    representationName: objectLocal.representationName,
+    fieldValueNames,
+  });
+  context.runtimeFamilies.add('specialized_object');
+  return localGetExpression(objectName, 'heap_ref');
+}
+
 function lowerExpression(
   expression: SourceExpressionIR,
   context: FunctionLoweringContext,
@@ -934,6 +3105,10 @@ function lowerExpression(
       const staticProperty = lowerClassStaticPropertyAccessExpression(expression, context);
       if (staticProperty) {
         return staticProperty;
+      }
+      const collectionProperty = lowerCollectionPropertyAccessExpression(expression, context);
+      if (collectionProperty) {
+        return collectionProperty;
       }
       if (expression.object.kind === 'identifier') {
         const field = lowerObjectPropertyReadFromLocal(
@@ -1093,7 +3268,21 @@ function lowerExpression(
       context.unsupportedKinds.add('array_literal');
       return { kind: 'undefined_literal', representation: 'tagged_ref' };
     }
+    case 'object_literal':
+      return lowerObjectLiteralExpression(expression, context);
     case 'call_expression': {
+      const promiseThenCall = lowerPromiseThenCallExpression(expression, context);
+      if (promiseThenCall) {
+        return promiseThenCall;
+      }
+      const promiseStaticCall = lowerPromiseStaticCallExpression(expression, context);
+      if (promiseStaticCall) {
+        return promiseStaticCall;
+      }
+      const collectionMethodCall = lowerCollectionMethodCallExpression(expression, context);
+      if (collectionMethodCall) {
+        return collectionMethodCall;
+      }
       const staticMethodCall = lowerClassStaticMethodCallExpression(expression, context);
       if (staticMethodCall) {
         return staticMethodCall;
@@ -1112,7 +3301,7 @@ function lowerExpression(
               name: expression.callee.name,
               representation: 'closure_ref',
             },
-            args: expression.args.map((arg) => lowerExpression(arg, context)),
+            args: lowerCallArguments(expression.args, undefined, context),
             signatureId: closureLocal.signatureId,
             representation: closureLocal.resultRepresentation,
           };
@@ -1125,7 +3314,11 @@ function lowerExpression(
         return {
           kind: 'call',
           callee: expression.callee.name,
-          args: expression.args.map((arg) => lowerExpression(arg, context)),
+          args: lowerCallArguments(
+            expression.args,
+            context.functionParamTypes.get(expression.callee.name),
+            context,
+          ),
           representation,
         };
       }
@@ -1145,12 +3338,16 @@ function lowerExpression(
       return {
         kind: 'closure_call',
         callee: materialized.callee,
-        args: expression.args.map((arg) => lowerExpression(arg, context)),
+        args: lowerCallArguments(expression.args, undefined, context),
         signatureId: closureLocal.signatureId,
         representation: closureLocal.resultRepresentation,
       };
     }
     case 'new_expression': {
+      const builtinError = lowerBuiltinErrorNewExpression(expression, context);
+      if (builtinError) {
+        return builtinError;
+      }
       const targetName = nextTempLocalName(context, 'class_instance');
       const statements = lowerClassConstructionDeclaration(
         targetName,
@@ -1165,8 +3362,12 @@ function lowerExpression(
       return { kind: 'local_get', name: targetName, representation: 'heap_ref' };
     }
     case 'binary_expression': {
-      const left = lowerExpression(expression.left, context);
-      const right = lowerExpression(expression.right, context);
+      const unionBinary = lowerUnionBinaryExpression(expression, context);
+      if (unionBinary) {
+        return unionBinary;
+      }
+      let left = lowerExpression(expression.left, context);
+      let right = lowerExpression(expression.right, context);
       if (
         expression.operator === '+' &&
         left.representation === 'owned_string_ref' &&
@@ -1180,6 +3381,26 @@ function lowerExpression(
           right,
           representation: 'owned_string_ref',
         };
+      }
+      if (
+        ['+', '-', '*', '/', '>', '>=', '<', '<='].includes(expression.operator) &&
+        left.representation === 'tagged_ref' &&
+        right.representation === 'f64'
+      ) {
+        const untaggedLeft = untagUnionExpressionForRepresentation(left, 'f64', context);
+        if (untaggedLeft) {
+          left = untaggedLeft;
+        }
+      }
+      if (
+        ['+', '-', '*', '/', '>', '>=', '<', '<='].includes(expression.operator) &&
+        right.representation === 'tagged_ref' &&
+        left.representation === 'f64'
+      ) {
+        const untaggedRight = untagUnionExpressionForRepresentation(right, 'f64', context);
+        if (untaggedRight) {
+          right = untaggedRight;
+        }
       }
       const binary = binaryOperatorForSource(expression.operator, left, right);
       if (!binary) {
@@ -1550,6 +3771,39 @@ function materializeOwnedStringKeyExpression(
   };
 }
 
+function materializeExpressionValue(
+  expression: SourceExpressionIR,
+  context: FunctionLoweringContext,
+  prefix: string,
+  targetType?: SemanticTypeIR,
+  targetRepresentation?: CompilerValueType,
+):
+  | { valueName: string; valueType: CompilerValueType; statements: SemanticStatementIR[] }
+  | undefined {
+  const rawValue = lowerExpression(expression, context);
+  const statements = takePendingStatements(context);
+  const typedValue = adaptExpressionToSemanticType(rawValue, targetType, context) ?? rawValue;
+  const value = targetRepresentation === 'tagged_ref' && typedValue.representation !== 'tagged_ref'
+    ? taggedUnionExpressionForValue(typedValue, context)
+    : typedValue;
+  if (!value) {
+    return undefined;
+  }
+  if (targetRepresentation && value.representation !== targetRepresentation) {
+    return undefined;
+  }
+  if (value.kind === 'local_get') {
+    return { valueName: value.name, valueType: value.representation, statements };
+  }
+  const valueName = nextTempLocalName(context, prefix);
+  addLocal(context, valueName, value.representation);
+  return {
+    valueName,
+    valueType: value.representation,
+    statements: [...statements, { kind: 'local_set', name: valueName, value }],
+  };
+}
+
 function materializeStaticOwnedStringKey(
   key: string,
   context: FunctionLoweringContext,
@@ -1570,6 +3824,199 @@ function materializeStaticOwnedStringKey(
       },
     }],
   };
+}
+
+function materializeOwnedStringLiteralValue(
+  value: string,
+  context: FunctionLoweringContext,
+  prefix: string,
+): { valueName: string; valueType: 'owned_string_ref'; statements: SemanticStatementIR[] } {
+  context.runtimeFamilies.add('string');
+  const valueName = nextTempLocalName(context, prefix);
+  addLocal(context, valueName, 'owned_string_ref');
+  return {
+    valueName,
+    valueType: 'owned_string_ref',
+    statements: [{
+      kind: 'local_set',
+      name: valueName,
+      value: {
+        kind: 'owned_string_literal',
+        literalId: getStringLiteralId(context, JSON.stringify(value)),
+        representation: 'owned_string_ref',
+      },
+    }],
+  };
+}
+
+function builtinErrorConstructorNameFromExpression(
+  expression: SourceExpressionIR,
+): string | undefined {
+  if (expression.kind === 'identifier' && BUILTIN_ERROR_CONSTRUCTOR_NAMES.has(expression.name)) {
+    return expression.name;
+  }
+  if (
+    expression.kind === 'property_access' &&
+    expression.object.kind === 'identifier' &&
+    expression.object.name === 'globalThis' &&
+    BUILTIN_ERROR_CONSTRUCTOR_NAMES.has(expression.property)
+  ) {
+    return expression.property;
+  }
+  return undefined;
+}
+
+function builtinErrorCauseExpression(
+  expression: SourceExpressionIR,
+  context: FunctionLoweringContext,
+): SourceExpressionIR | undefined {
+  if (expression.kind === 'literal' && expression.literalKind === 'undefined') {
+    return undefined;
+  }
+  if (expression.kind !== 'object_literal') {
+    context.unsupportedKinds.add('builtin_error_options');
+    return undefined;
+  }
+  const cause = expression.properties.find((property) =>
+    !property.computedName && property.name === 'cause'
+  );
+  return cause?.value;
+}
+
+function builtinErrorFields(): SourceSemanticObjectLocal['fields'] {
+  return [
+    { name: SOUNDSCRIPT_BUILTIN_ERROR_INTERNAL_BRAND_KEY, representation: 'owned_string_ref' },
+    { name: 'name', representation: 'owned_string_ref' },
+    { name: 'message', representation: 'owned_string_ref' },
+    { name: 'cause', representation: 'tagged_ref' },
+  ];
+}
+
+function builtinErrorObjectLocal(
+  context: FunctionLoweringContext,
+  representationName = registerDynamicObjectLayout(context, 'builtin_error'),
+): SourceSemanticObjectLocal {
+  return {
+    family: 'dynamic_object',
+    representationName,
+    fields: builtinErrorFields(),
+  };
+}
+
+function lowerBuiltinErrorNewExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'new_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  const constructorName = builtinErrorConstructorNameFromExpression(expression.callee);
+  if (!constructorName) {
+    return undefined;
+  }
+  if (expression.args.length > 2) {
+    context.unsupportedKinds.add('builtin_error_constructor_arity');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+
+  context.runtimeFamilies.add('error');
+  context.runtimeFamilies.add('finite_union');
+  const representationName = registerDynamicObjectLayout(context, 'builtin_error');
+  const targetName = nextTempLocalName(context, 'error');
+  addLocal(context, targetName, 'heap_ref');
+  context.objectLocals.set(targetName, builtinErrorObjectLocal(context, representationName));
+
+  const statements: SemanticStatementIR[] = [];
+  const brandKey = materializeStaticOwnedStringKey(
+    SOUNDSCRIPT_BUILTIN_ERROR_INTERNAL_BRAND_KEY,
+    context,
+    'error_brand_key',
+  );
+  const nameKey = materializeStaticOwnedStringKey('name', context, 'error_name_key');
+  const messageKey = materializeStaticOwnedStringKey('message', context, 'error_message_key');
+  const causeKey = materializeStaticOwnedStringKey('cause', context, 'error_cause_key');
+  const nameValue = materializeOwnedStringLiteralValue(
+    constructorName,
+    context,
+    'error_name_value',
+  );
+  const messageValue = expression.args[0]
+    ? materializeExpressionValue(
+      expression.args[0],
+      context,
+      'error_message_value',
+      undefined,
+      'owned_string_ref',
+    )
+    : materializeOwnedStringLiteralValue('', context, 'error_message_value');
+  if (!messageValue) {
+    context.unsupportedKinds.add('builtin_error_message');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+  const causeExpression = expression.args[1]
+    ? builtinErrorCauseExpression(expression.args[1], context)
+    : undefined;
+  const causeValue = causeExpression
+    ? materializeExpressionValue(
+      causeExpression,
+      context,
+      'error_cause_value',
+      undefined,
+      'tagged_ref',
+    )
+    : (() => {
+      const valueName = nextTempLocalName(context, 'error_cause_value');
+      addLocal(context, valueName, 'tagged_ref');
+      return {
+        valueName,
+        valueType: 'tagged_ref' as const,
+        statements: [{
+          kind: 'local_set' as const,
+          name: valueName,
+          value: { kind: 'undefined_literal', representation: 'tagged_ref' } as const,
+        }],
+      };
+    })();
+  if (!causeValue) {
+    context.unsupportedKinds.add('builtin_error_cause');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+
+  statements.push(
+    ...brandKey.statements,
+    ...nameKey.statements,
+    ...messageKey.statements,
+    ...causeKey.statements,
+    ...nameValue.statements,
+    ...messageValue.statements,
+    ...causeValue.statements,
+    {
+      kind: 'dynamic_object_new',
+      targetName,
+      representationName,
+      entries: [
+        {
+          keyName: brandKey.keyName,
+          valueName: nameValue.valueName,
+          valueType: nameValue.valueType,
+        },
+        {
+          keyName: nameKey.keyName,
+          valueName: nameValue.valueName,
+          valueType: nameValue.valueType,
+        },
+        {
+          keyName: messageKey.keyName,
+          valueName: messageValue.valueName,
+          valueType: messageValue.valueType,
+        },
+        {
+          keyName: causeKey.keyName,
+          valueName: causeValue.valueName,
+          valueType: causeValue.valueType,
+        },
+      ],
+    },
+  );
+  context.pendingStatements.push(...statements);
+  return { kind: 'local_get', name: targetName, representation: 'heap_ref' };
 }
 
 function homogeneousFieldRepresentation(
@@ -1618,35 +4065,301 @@ function objectFieldGetStatementForLocal(
   return undefined;
 }
 
-function lowerObjectPropertyReadFromLocal(
+function objectPropertyReadValueFromLocal(
   objectName: string,
   propertyName: string,
+  objectLayout: SourceSemanticObjectLocal,
   context: FunctionLoweringContext,
-): SemanticExpressionIR | undefined {
-  const objectLayout = context.objectLocals.get(objectName);
-  const field = objectLayout?.fields.find((candidate) => candidate.name === propertyName);
-  if (!objectLayout || !field) {
+): {
+  statements: SemanticStatementIR[];
+  value: Extract<SemanticExpressionIR, { kind: 'local_get' }>;
+} | undefined {
+  const field = objectLayout.fields.find((candidate) => candidate.name === propertyName);
+  if (!field) {
     return undefined;
   }
-  const tempName = nextTempLocalName(context, `field_${objectName}`);
-  addLocal(context, tempName, field.representation);
+  const targetName = nextTempLocalName(context, `field_${objectName}`);
+  addLocal(context, targetName, field.representation);
+  if (objectLayout.family === 'dynamic_object') {
+    const key = materializeStaticOwnedStringKey(
+      propertyName,
+      context,
+      `dynamic_field_${objectName}`,
+    );
+    context.runtimeFamilies.add('dynamic_object');
+    return {
+      statements: [...key.statements, {
+        kind: 'dynamic_object_property_get',
+        targetName,
+        objectName,
+        representationName: objectLayout.representationName,
+        propertyKeyName: key.keyName,
+        valueType: field.representation,
+      }],
+      value: { kind: 'local_get', name: targetName, representation: field.representation },
+    };
+  }
   const getStatement = objectFieldGetStatementForLocal(
-    tempName,
+    targetName,
     objectName,
     objectLayout,
     propertyName,
   );
   if (!getStatement) {
     context.unsupportedKinds.add(`property_access:${propertyName}`);
-    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    return undefined;
   }
-  context.pendingStatements.push(getStatement);
   context.runtimeFamilies.add(objectLayout.family);
   return {
-    kind: 'local_get',
-    name: tempName,
-    representation: field.representation,
+    statements: [getStatement],
+    value: { kind: 'local_get', name: targetName, representation: field.representation },
   };
+}
+
+function lowerObjectPropertyReadFromLocal(
+  objectName: string,
+  propertyName: string,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  const objectLayout = context.objectLocals.get(objectName);
+  if (!objectLayout) {
+    return undefined;
+  }
+  const read = objectPropertyReadValueFromLocal(
+    objectName,
+    propertyName,
+    objectLayout,
+    context,
+  );
+  if (!read) {
+    return undefined;
+  }
+  context.pendingStatements.push(...read.statements);
+  return read.value;
+}
+
+function lowerCollectionPropertyAccessExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'property_access' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (expression.object.kind !== 'identifier' || expression.property !== 'size') {
+    return undefined;
+  }
+  const mapLocal = context.mapLocals.get(expression.object.name);
+  if (mapLocal) {
+    const targetName = nextTempLocalName(context, `map_size_${expression.object.name}`);
+    addLocal(context, targetName, 'f64');
+    context.pendingStatements.push({
+      kind: 'map_size',
+      targetName,
+      objectName: expression.object.name,
+      storage: true,
+    });
+    context.runtimeFamilies.add('map');
+    return localGetExpression(targetName, 'f64');
+  }
+  const setLocal = context.setLocals.get(expression.object.name);
+  if (setLocal) {
+    const targetName = nextTempLocalName(context, `set_size_${expression.object.name}`);
+    addLocal(context, targetName, 'f64');
+    context.pendingStatements.push({
+      kind: 'set_size',
+      targetName,
+      objectName: expression.object.name,
+      valuesArrayType: setLocal.valuesArrayType,
+    });
+    context.runtimeFamilies.add('set');
+    context.runtimeFamilies.add('array');
+    return localGetExpression(targetName, 'f64');
+  }
+  return undefined;
+}
+
+function lowerMapMethodCallExpression(
+  objectName: string,
+  methodName: string,
+  args: readonly SourceExpressionIR[],
+  mapLocal: SourceSemanticMapLocal,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (methodName === 'set' && args.length >= 2) {
+    const key = materializeOwnedStringKeyExpression(args[0]!, context, `map_key_${objectName}`);
+    const value = materializeExpressionValue(
+      args[1]!,
+      context,
+      `map_value_${objectName}`,
+      mapLocal.valueType,
+    );
+    if (!key || !value) {
+      context.unsupportedKinds.add('map_set');
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    context.pendingStatements.push(...key.statements, ...value.statements, {
+      kind: 'map_set',
+      objectName,
+      keyName: key.keyName,
+      valueName: value.valueName,
+      valueType: value.valueType,
+    });
+    context.runtimeFamilies.add('map');
+    context.runtimeFamilies.add('finite_union');
+    return localGetExpression(objectName, 'heap_ref');
+  }
+  if (methodName === 'get' && args.length >= 1) {
+    const key = materializeOwnedStringKeyExpression(args[0]!, context, `map_key_${objectName}`);
+    if (!key) {
+      context.unsupportedKinds.add('map_get');
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    const targetName = nextTempLocalName(context, `map_value_${objectName}`);
+    addLocal(context, targetName, 'tagged_ref');
+    context.pendingStatements.push(...key.statements, {
+      kind: 'map_get',
+      targetName,
+      objectName,
+      keyName: key.keyName,
+    });
+    context.runtimeFamilies.add('map');
+    context.runtimeFamilies.add('finite_union');
+    return localGetExpression(targetName, 'tagged_ref');
+  }
+  if ((methodName === 'has' || methodName === 'delete') && args.length >= 1) {
+    const key = materializeOwnedStringKeyExpression(args[0]!, context, `map_key_${objectName}`);
+    if (!key) {
+      context.unsupportedKinds.add(`map_${methodName}`);
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    const targetName = nextTempLocalName(context, `map_${methodName}_${objectName}`);
+    addLocal(context, targetName, 'i32');
+    context.pendingStatements.push(...key.statements, {
+      kind: methodName === 'has' ? 'map_has' : 'map_delete',
+      targetName,
+      objectName,
+      keyName: key.keyName,
+    });
+    context.runtimeFamilies.add('map');
+    context.runtimeFamilies.add('finite_union');
+    return localGetExpression(targetName, 'i32');
+  }
+  if (methodName === 'clear' && args.length === 0) {
+    const targetName = nextTempLocalName(context, `map_clear_${objectName}`);
+    addLocal(context, targetName, 'tagged_ref');
+    context.pendingStatements.push({
+      kind: 'map_clear',
+      targetName,
+      objectName,
+    });
+    context.runtimeFamilies.add('map');
+    context.runtimeFamilies.add('finite_union');
+    return localGetExpression(targetName, 'tagged_ref');
+  }
+  return undefined;
+}
+
+function lowerSetMethodCallExpression(
+  objectName: string,
+  methodName: string,
+  args: readonly SourceExpressionIR[],
+  setLocal: SourceSemanticSetLocal,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (methodName === 'add' && args.length >= 1) {
+    const value = materializeExpressionValue(
+      args[0]!,
+      context,
+      `set_value_${objectName}`,
+      setLocal.valueType,
+      setLocal.valuesElementType,
+    );
+    if (!value) {
+      context.unsupportedKinds.add('set_add');
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    context.pendingStatements.push(...value.statements, {
+      kind: 'set_add',
+      objectName,
+      valueName: value.valueName,
+      valuesArrayType: setLocal.valuesArrayType,
+      valuesElementType: setLocal.valuesElementType,
+    });
+    context.runtimeFamilies.add('set');
+    context.runtimeFamilies.add('array');
+    return localGetExpression(objectName, 'heap_ref');
+  }
+  if ((methodName === 'has' || methodName === 'delete') && args.length >= 1) {
+    const value = materializeExpressionValue(
+      args[0]!,
+      context,
+      `set_value_${objectName}`,
+      setLocal.valueType,
+      setLocal.valuesElementType,
+    );
+    if (!value) {
+      context.unsupportedKinds.add(`set_${methodName}`);
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    const targetName = nextTempLocalName(context, `set_${methodName}_${objectName}`);
+    addLocal(context, targetName, 'i32');
+    context.pendingStatements.push(...value.statements, {
+      kind: methodName === 'has' ? 'set_has' : 'set_delete',
+      targetName,
+      objectName,
+      valueName: value.valueName,
+      valuesArrayType: setLocal.valuesArrayType,
+      valuesElementType: setLocal.valuesElementType,
+    });
+    context.runtimeFamilies.add('set');
+    context.runtimeFamilies.add('array');
+    return localGetExpression(targetName, 'i32');
+  }
+  if (methodName === 'clear' && args.length === 0) {
+    const targetName = nextTempLocalName(context, `set_clear_${objectName}`);
+    addLocal(context, targetName, 'tagged_ref');
+    context.pendingStatements.push({
+      kind: 'set_clear',
+      targetName,
+      objectName,
+      valuesArrayType: setLocal.valuesArrayType,
+    });
+    context.runtimeFamilies.add('set');
+    context.runtimeFamilies.add('array');
+    return localGetExpression(targetName, 'tagged_ref');
+  }
+  return undefined;
+}
+
+function lowerCollectionMethodCallExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'call_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (
+    expression.callee.kind !== 'property_access' ||
+    expression.callee.object.kind !== 'identifier'
+  ) {
+    return undefined;
+  }
+  const objectName = expression.callee.object.name;
+  const mapLocal = context.mapLocals.get(objectName);
+  if (mapLocal) {
+    return lowerMapMethodCallExpression(
+      objectName,
+      expression.callee.property,
+      expression.args,
+      mapLocal,
+      context,
+    );
+  }
+  const setLocal = context.setLocals.get(objectName);
+  if (setLocal) {
+    return lowerSetMethodCallExpression(
+      objectName,
+      expression.callee.property,
+      expression.args,
+      setLocal,
+      context,
+    );
+  }
+  return undefined;
 }
 
 function objectLocalInfoForRead(
@@ -1663,6 +4376,40 @@ function objectLocalInfoForRead(
   if (source.kind === 'call_expression' && source.callee.kind === 'identifier') {
     const resultType = context.functionResultTypes.get(source.callee.name);
     return resultType ? objectLocalForParameterType(resultType, context) : undefined;
+  }
+  return undefined;
+}
+
+function mapLocalInfoForRead(
+  source: SourceExpressionIR,
+  expression: SemanticExpressionIR,
+  context: FunctionLoweringContext,
+): SourceSemanticMapLocal | undefined {
+  if (expression.kind === 'local_get') {
+    return context.mapLocals.get(expression.name);
+  }
+  if (source.kind === 'identifier') {
+    return context.mapLocals.get(source.name);
+  }
+  if (source.kind === 'call_expression' && source.callee.kind === 'identifier') {
+    return mapLocalInfoForSemanticType(context.functionResultTypes.get(source.callee.name));
+  }
+  return undefined;
+}
+
+function setLocalInfoForRead(
+  source: SourceExpressionIR,
+  expression: SemanticExpressionIR,
+  context: FunctionLoweringContext,
+): SourceSemanticSetLocal | undefined {
+  if (expression.kind === 'local_get') {
+    return context.setLocals.get(expression.name);
+  }
+  if (source.kind === 'identifier') {
+    return context.setLocals.get(source.name);
+  }
+  if (source.kind === 'call_expression' && source.callee.kind === 'identifier') {
+    return setLocalInfoForSemanticType(context.functionResultTypes.get(source.callee.name));
   }
   return undefined;
 }
@@ -1842,19 +4589,835 @@ function sourceStatementsContainControlTransfer(
   });
 }
 
+function sourceStatementsContainUnsupportedCatchableTryFlow(
+  statements: readonly SourceStatementIR[],
+): boolean {
+  return statements.some((statement): boolean => {
+    switch (statement.kind) {
+      case 'break':
+      case 'continue':
+      case 'while':
+      case 'do_while':
+      case 'for':
+      case 'for_of':
+      case 'switch':
+      case 'try':
+        return true;
+      case 'block':
+        return sourceStatementsContainUnsupportedCatchableTryFlow(statement.statements);
+      case 'if':
+        return sourceStatementsContainUnsupportedCatchableTryFlow(statement.consequent) ||
+          sourceStatementsContainUnsupportedCatchableTryFlow(statement.alternate);
+      default:
+        return false;
+    }
+  });
+}
+
+function sourceStatementsContainReturn(
+  statements: readonly SourceStatementIR[],
+): boolean {
+  return statements.some((statement): boolean => {
+    switch (statement.kind) {
+      case 'return':
+        return true;
+      case 'block':
+        return sourceStatementsContainReturn(statement.statements);
+      case 'if':
+        return sourceStatementsContainReturn(statement.consequent) ||
+          sourceStatementsContainReturn(statement.alternate);
+      case 'switch':
+        return statement.clauses.some((clause) => sourceStatementsContainReturn(clause.statements));
+      case 'try':
+        return sourceStatementsContainReturn(statement.tryBlock) ||
+          sourceStatementsContainReturn(statement.catchBlock ?? []) ||
+          sourceStatementsContainReturn(statement.finallyBlock ?? []);
+      default:
+        return false;
+    }
+  });
+}
+
+function sourceStatementsContainLoopControl(
+  statements: readonly SourceStatementIR[],
+  kind: 'break' | 'continue',
+): boolean {
+  return statements.some((statement): boolean => {
+    switch (statement.kind) {
+      case 'break':
+      case 'continue':
+        return statement.kind === kind;
+      case 'block':
+        return sourceStatementsContainLoopControl(statement.statements, kind);
+      case 'if':
+        return sourceStatementsContainLoopControl(statement.consequent, kind) ||
+          sourceStatementsContainLoopControl(statement.alternate, kind);
+      case 'try':
+        return sourceStatementsContainLoopControl(statement.tryBlock, kind) ||
+          sourceStatementsContainLoopControl(statement.catchBlock ?? [], kind) ||
+          sourceStatementsContainLoopControl(statement.finallyBlock ?? [], kind);
+      case 'while':
+      case 'do_while':
+      case 'for':
+      case 'for_of':
+      case 'switch':
+        return false;
+      default:
+        return false;
+    }
+  });
+}
+
+function catchableTryActiveCondition(target: SourceSemanticThrowTarget): SemanticExpressionIR {
+  return {
+    kind: 'binary',
+    op: 'i32.eq',
+    left: localGetExpression(target.thrownFlagName, 'i32'),
+    right: booleanLiteralExpression(false),
+    representation: 'i32',
+  };
+}
+
+function createReturnCompletionTarget(
+  context: FunctionLoweringContext,
+  prefix: string,
+): SourceSemanticCompletionTarget {
+  const returnFlagName = nextTempLocalName(context, `${prefix}_return`);
+  const returnValueName = nextTempLocalName(context, `${prefix}_return_value`);
+  const returnRepresentation = context.currentResultType
+    ? representationForSemanticType(context.currentResultType)
+    : 'tagged_ref';
+  addLocal(context, returnFlagName, 'i32');
+  addLocal(context, returnValueName, returnRepresentation);
+  return { returnFlagName, returnValueName, returnRepresentation };
+}
+
+function createLoopControlCompletionTarget(
+  context: FunctionLoweringContext,
+  prefix: string,
+  needsBreak: boolean,
+  needsContinue: boolean,
+): SourceSemanticCompletionTarget {
+  const breakFlagName = needsBreak ? nextTempLocalName(context, `${prefix}_break`) : undefined;
+  const continueFlagName = needsContinue
+    ? nextTempLocalName(context, `${prefix}_continue`)
+    : undefined;
+  if (breakFlagName) {
+    addLocal(context, breakFlagName, 'i32');
+  }
+  if (continueFlagName) {
+    addLocal(context, continueFlagName, 'i32');
+  }
+  return { breakFlagName, continueFlagName };
+}
+
+function initializeReturnCompletionTarget(
+  target: SourceSemanticCompletionTarget,
+): SemanticStatementIR {
+  if (!target.returnFlagName) {
+    return { kind: 'unsupported_statement', sourceKind: 'return' };
+  }
+  return {
+    kind: 'local_set',
+    name: target.returnFlagName,
+    value: booleanLiteralExpression(false),
+  };
+}
+
+function initializeLoopControlCompletionTarget(
+  target: SourceSemanticCompletionTarget,
+): readonly SemanticStatementIR[] {
+  const statements: SemanticStatementIR[] = [];
+  if (target.breakFlagName) {
+    statements.push({
+      kind: 'local_set',
+      name: target.breakFlagName,
+      value: booleanLiteralExpression(false),
+    });
+  }
+  if (target.continueFlagName) {
+    statements.push({
+      kind: 'local_set',
+      name: target.continueFlagName,
+      value: booleanLiteralExpression(false),
+    });
+  }
+  return statements;
+}
+
+function captureReturnCompletion(
+  returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+  target: SourceSemanticCompletionTarget,
+  context: FunctionLoweringContext,
+  sourceKind: string,
+): readonly SemanticStatementIR[] {
+  if (!target.returnFlagName || !target.returnValueName || !target.returnRepresentation) {
+    context.unsupportedKinds.add(`${sourceKind}_return_value`);
+    return [{ kind: 'unsupported_statement', sourceKind }];
+  }
+  const rawValue = returnStatement.expression
+    ? lowerExpression(returnStatement.expression, context)
+    : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+  const value = adaptExpressionToSemanticType(
+    rawValue,
+    context.currentResultType,
+    context,
+  ) ?? rawValue;
+  if (value.representation !== target.returnRepresentation) {
+    context.unsupportedKinds.add(`${sourceKind}_return_value`);
+    return [{ kind: 'unsupported_statement', sourceKind }];
+  }
+  return [
+    ...takePendingStatements(context),
+    { kind: 'local_set', name: target.returnValueName, value },
+    {
+      kind: 'local_set',
+      name: target.returnFlagName,
+      value: booleanLiteralExpression(true),
+    },
+  ];
+}
+
+function captureLoopControlCompletion(
+  kind: 'break' | 'continue',
+  target: SourceSemanticCompletionTarget,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] {
+  const flagName = kind === 'break' ? target.breakFlagName : target.continueFlagName;
+  if (!flagName) {
+    context.unsupportedKinds.add(`try_finally_${kind}`);
+    return [{ kind: 'unsupported_statement', sourceKind: kind }];
+  }
+  return [{
+    kind: 'local_set',
+    name: flagName,
+    value: booleanLiteralExpression(true),
+  }];
+}
+
+function dispatchReturnCompletionTarget(
+  target: SourceSemanticCompletionTarget,
+): SemanticStatementIR {
+  if (!target.returnFlagName || !target.returnValueName || !target.returnRepresentation) {
+    return { kind: 'unsupported_statement', sourceKind: 'return' };
+  }
+  return {
+    kind: 'if',
+    condition: localGetExpression(target.returnFlagName, 'i32'),
+    thenBody: [{
+      kind: 'return',
+      value: localGetExpression(target.returnValueName, target.returnRepresentation),
+    }],
+    elseBody: [],
+  };
+}
+
+function dispatchLoopControlCompletionTarget(
+  target: SourceSemanticCompletionTarget,
+): readonly SemanticStatementIR[] {
+  const statements: SemanticStatementIR[] = [];
+  if (target.breakFlagName) {
+    statements.push({
+      kind: 'if',
+      condition: localGetExpression(target.breakFlagName, 'i32'),
+      thenBody: [{ kind: 'break' }],
+      elseBody: [],
+    });
+  }
+  if (target.continueFlagName) {
+    statements.push({
+      kind: 'if',
+      condition: localGetExpression(target.continueFlagName, 'i32'),
+      thenBody: [{ kind: 'continue' }],
+      elseBody: [],
+    });
+  }
+  return statements;
+}
+
+function lowerTryCatchStatement(
+  statement: Extract<SourceStatementIR, { kind: 'try' }>,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] {
+  const catchBlock = statement.catchBlock;
+  const finallyBlock = statement.finallyBlock ?? [];
+  if (!catchBlock) {
+    context.unsupportedKinds.add('try_catch');
+    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+  }
+  const catchReturnIndex = catchBlock.findIndex((child) => child.kind === 'return');
+  const catchReturnStatement = catchReturnIndex >= 0
+    ? catchBlock[catchReturnIndex] as Extract<SourceStatementIR, { kind: 'return' }>
+    : undefined;
+  const catchLeadingStatements = catchReturnIndex >= 0
+    ? catchBlock.slice(0, catchReturnIndex)
+    : catchBlock;
+  const catchLoopControlIndex = catchBlock.findIndex((child) =>
+    child.kind === 'break' || child.kind === 'continue'
+  );
+  const catchLoopControlStatement = catchLoopControlIndex >= 0
+    ? catchBlock[catchLoopControlIndex] as Extract<
+      SourceStatementIR,
+      { kind: 'break' | 'continue' }
+    >
+    : undefined;
+  const catchLoopControlLeadingStatements = catchLoopControlIndex >= 0
+    ? catchBlock.slice(0, catchLoopControlIndex)
+    : catchBlock;
+  const catchThrowIndex = catchBlock.findIndex((child) => child.kind === 'throw');
+  const catchThrowStatement = catchThrowIndex >= 0
+    ? catchBlock[catchThrowIndex] as Extract<SourceStatementIR, { kind: 'throw' }>
+    : undefined;
+  const catchThrowLeadingStatements = catchThrowIndex >= 0
+    ? catchBlock.slice(0, catchThrowIndex)
+    : catchBlock;
+  const tryReturnIndex = statement.tryBlock.findIndex((child) => child.kind === 'return');
+  const tryReturnStatement = tryReturnIndex >= 0
+    ? statement.tryBlock[tryReturnIndex] as Extract<SourceStatementIR, { kind: 'return' }>
+    : undefined;
+  const tryLeadingStatements = tryReturnIndex >= 0
+    ? statement.tryBlock.slice(0, tryReturnIndex)
+    : statement.tryBlock;
+  const tryLoopControlIndex = statement.tryBlock.findIndex((child) =>
+    child.kind === 'break' || child.kind === 'continue'
+  );
+  const tryLoopControlStatement = tryLoopControlIndex >= 0
+    ? statement.tryBlock[tryLoopControlIndex] as Extract<
+      SourceStatementIR,
+      { kind: 'break' | 'continue' }
+    >
+    : undefined;
+  const tryLoopControlLeadingStatements = tryLoopControlIndex >= 0
+    ? statement.tryBlock.slice(0, tryLoopControlIndex)
+    : statement.tryBlock;
+  const supportsTryTerminalReturn = tryReturnStatement !== undefined &&
+    statement.tryBlock.length === tryReturnIndex + 1 &&
+    !sourceStatementsContainControlTransfer(tryLeadingStatements);
+  const supportsCatchTerminalReturn = catchReturnStatement !== undefined &&
+    catchBlock.length === catchReturnIndex + 1 &&
+    !sourceStatementsContainControlTransfer(catchLeadingStatements);
+  if (
+    (tryReturnStatement && !supportsTryTerminalReturn) ||
+    (catchReturnStatement && !supportsCatchTerminalReturn)
+  ) {
+    context.unsupportedKinds.add('try_catch_control_flow');
+    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+  }
+  const supportsTryReturnThroughFinally = finallyBlock.length > 0 && supportsTryTerminalReturn;
+  const supportsCatchReturnThroughFinally = finallyBlock.length > 0 &&
+    supportsCatchTerminalReturn;
+  const supportsTryTerminalLoopControl = tryLoopControlStatement !== undefined &&
+    statement.tryBlock.length === tryLoopControlIndex + 1 &&
+    !sourceStatementsContainControlTransfer(tryLoopControlLeadingStatements);
+  const supportsTryLoopControlThroughFinally = finallyBlock.length > 0 &&
+    supportsTryTerminalLoopControl;
+  const supportsCatchLoopControlThroughFinally = finallyBlock.length > 0 &&
+    catchLoopControlStatement !== undefined &&
+    catchBlock.length === catchLoopControlIndex + 1 &&
+    !sourceStatementsContainControlTransfer(catchLoopControlLeadingStatements);
+  const supportsCatchThrowThroughFinally = finallyBlock.length > 0 &&
+    catchThrowStatement !== undefined &&
+    catchBlock.length === catchThrowIndex + 1 &&
+    !sourceStatementsContainControlTransfer(catchThrowLeadingStatements) &&
+    context.throwTargets.length > 0;
+  const supportsReturnThroughFinally = supportsTryReturnThroughFinally ||
+    supportsCatchReturnThroughFinally;
+  const supportsCatchCompletionThroughFinally = supportsCatchReturnThroughFinally ||
+    supportsCatchLoopControlThroughFinally ||
+    supportsCatchThrowThroughFinally;
+  if (
+    finallyBlock.length > 0 &&
+    (
+      sourceStatementsContainControlTransfer(finallyBlock) ||
+      (
+        supportsTryReturnThroughFinally ? false : sourceStatementsContainReturn(statement.tryBlock)
+      ) ||
+      (
+        supportsCatchCompletionThroughFinally
+          ? false
+          : sourceStatementsContainControlTransfer(catchBlock)
+      )
+    )
+  ) {
+    context.unsupportedKinds.add('try_catch_finally_control_flow');
+    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+  }
+  const catchableTryFlowStatements = supportsTryTerminalLoopControl
+    ? tryLoopControlLeadingStatements
+    : statement.tryBlock;
+  const supportsNestedCatchableTry = catchableTryFlowStatements.length === 1 &&
+    catchableTryFlowStatements[0]?.kind === 'try';
+  if (
+    !supportsNestedCatchableTry &&
+    sourceStatementsContainUnsupportedCatchableTryFlow(catchableTryFlowStatements)
+  ) {
+    context.unsupportedKinds.add('try_catch_control_flow');
+    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+  }
+  if (statement.catchBinding && statement.catchBinding.kind !== 'identifier_binding') {
+    context.unsupportedKinds.add('try_catch_binding');
+    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+  }
+
+  const thrownFlagName = nextTempLocalName(context, 'try_catch_thrown');
+  const thrownHeapName = nextTempLocalName(context, 'try_catch_heap');
+  const thrownValueName = nextTempLocalName(context, 'try_catch_value');
+  const target: SourceSemanticThrowTarget = { thrownFlagName, thrownHeapName, thrownValueName };
+  addLocal(context, thrownFlagName, 'i32');
+  addLocal(context, thrownHeapName, 'heap_ref');
+  addLocal(context, thrownValueName, 'tagged_ref');
+  context.runtimeFamilies.add('finite_union');
+  const completionReturnFlagName = supportsReturnThroughFinally
+    ? nextTempLocalName(context, 'try_catch_return')
+    : undefined;
+  const completionReturnValueName = supportsReturnThroughFinally
+    ? nextTempLocalName(context, 'try_catch_return_value')
+    : undefined;
+  const completionReturnRepresentation = supportsReturnThroughFinally
+    ? context.currentResultType
+      ? representationForSemanticType(context.currentResultType)
+      : 'tagged_ref'
+    : undefined;
+  const completionBreakFlagName =
+    (supportsTryLoopControlThroughFinally && tryLoopControlStatement?.kind === 'break') ||
+      (supportsCatchLoopControlThroughFinally && catchLoopControlStatement?.kind === 'break')
+      ? nextTempLocalName(context, 'try_catch_break')
+      : undefined;
+  const completionContinueFlagName =
+    (supportsTryLoopControlThroughFinally && tryLoopControlStatement?.kind === 'continue') ||
+      (supportsCatchLoopControlThroughFinally && catchLoopControlStatement?.kind === 'continue')
+      ? nextTempLocalName(context, 'try_catch_continue')
+      : undefined;
+  if (completionReturnFlagName) {
+    addLocal(context, completionReturnFlagName, 'i32');
+  }
+  if (completionReturnValueName && completionReturnRepresentation) {
+    addLocal(context, completionReturnValueName, completionReturnRepresentation);
+  }
+  if (completionBreakFlagName) {
+    addLocal(context, completionBreakFlagName, 'i32');
+  }
+  if (completionContinueFlagName) {
+    addLocal(context, completionContinueFlagName, 'i32');
+  }
+
+  const statements: SemanticStatementIR[] = [
+    {
+      kind: 'local_set',
+      name: thrownFlagName,
+      value: booleanLiteralExpression(false),
+    },
+    {
+      kind: 'local_set',
+      name: thrownHeapName,
+      value: { kind: 'heap_null', representation: 'heap_ref' },
+    },
+    {
+      kind: 'local_set',
+      name: thrownValueName,
+      value: { kind: 'undefined_literal', representation: 'tagged_ref' },
+    },
+    ...(completionReturnFlagName
+      ? [{
+        kind: 'local_set' as const,
+        name: completionReturnFlagName,
+        value: booleanLiteralExpression(false),
+      }]
+      : []),
+    ...(completionBreakFlagName
+      ? [{
+        kind: 'local_set' as const,
+        name: completionBreakFlagName,
+        value: booleanLiteralExpression(false),
+      }]
+      : []),
+    ...(completionContinueFlagName
+      ? [{
+        kind: 'local_set' as const,
+        name: completionContinueFlagName,
+        value: booleanLiteralExpression(false),
+      }]
+      : []),
+  ];
+
+  const captureReturnStatements = (
+    returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+  ): readonly SemanticStatementIR[] => {
+    if (
+      !completionReturnFlagName || !completionReturnValueName ||
+      !completionReturnRepresentation
+    ) {
+      context.unsupportedKinds.add('try_catch_return_value');
+      return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+    }
+    const rawValue = returnStatement.expression
+      ? lowerExpression(returnStatement.expression, context)
+      : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+    const value = adaptExpressionToSemanticType(
+      rawValue,
+      context.currentResultType,
+      context,
+    ) ?? rawValue;
+    if (value.representation !== completionReturnRepresentation) {
+      context.unsupportedKinds.add('try_catch_return_value');
+      return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+    }
+    return [
+      ...takePendingStatements(context),
+      { kind: 'local_set', name: completionReturnValueName, value },
+      {
+        kind: 'local_set',
+        name: completionReturnFlagName,
+        value: booleanLiteralExpression(true),
+      },
+    ];
+  };
+  const captureLoopControlStatements = (
+    controlStatement: Extract<SourceStatementIR, { kind: 'break' | 'continue' }>,
+  ): readonly SemanticStatementIR[] => {
+    const flagName = controlStatement.kind === 'break'
+      ? completionBreakFlagName
+      : completionContinueFlagName;
+    if (!flagName) {
+      context.unsupportedKinds.add('try_catch_loop_control');
+      return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+    }
+    return [{
+      kind: 'local_set',
+      name: flagName,
+      value: booleanLiteralExpression(true),
+    }];
+  };
+
+  context.throwTargets.push(target);
+  try {
+    const guardedTryStatements = supportsTryTerminalLoopControl
+      ? tryLoopControlLeadingStatements
+      : tryLeadingStatements;
+    for (const child of guardedTryStatements) {
+      statements.push({
+        kind: 'if',
+        condition: catchableTryActiveCondition(target),
+        thenBody: [...lowerStatement(child, context)],
+        elseBody: [],
+      });
+    }
+    if (supportsTryReturnThroughFinally && tryReturnStatement) {
+      statements.push({
+        kind: 'if',
+        condition: catchableTryActiveCondition(target),
+        thenBody: [...captureReturnStatements(tryReturnStatement)],
+        elseBody: [],
+      });
+    } else if (supportsTryTerminalReturn && tryReturnStatement) {
+      statements.push({
+        kind: 'if',
+        condition: catchableTryActiveCondition(target),
+        thenBody: [...lowerStatement(tryReturnStatement, context)],
+        elseBody: [],
+      });
+    }
+    if (supportsTryLoopControlThroughFinally && tryLoopControlStatement) {
+      statements.push({
+        kind: 'if',
+        condition: catchableTryActiveCondition(target),
+        thenBody: [...captureLoopControlStatements(tryLoopControlStatement)],
+        elseBody: [],
+      });
+    } else if (supportsTryTerminalLoopControl && tryLoopControlStatement) {
+      statements.push({
+        kind: 'if',
+        condition: catchableTryActiveCondition(target),
+        thenBody: [...lowerStatement(tryLoopControlStatement, context)],
+        elseBody: [],
+      });
+    }
+  } finally {
+    context.throwTargets.pop();
+  }
+
+  const catchStatements: SemanticStatementIR[] = [];
+  const catchBindingName = statement.catchBinding?.kind === 'identifier_binding'
+    ? statement.catchBinding.name
+    : undefined;
+  const catchBindingReads = catchBindingName
+    ? (() => {
+      const reads: string[] = [];
+      catchBlock.forEach((child) => collectSourceStatementIdentifierReads(child, reads));
+      return reads.includes(catchBindingName);
+    })()
+    : false;
+  if (catchBindingName && catchBindingReads) {
+    addLocal(context, catchBindingName, 'heap_ref');
+    context.localDeclarationKinds.set(catchBindingName, 'let');
+    context.objectLocals.set(catchBindingName, builtinErrorObjectLocal(context));
+    catchStatements.push({
+      kind: 'local_set',
+      name: catchBindingName,
+      value: localGetExpression(thrownHeapName, 'heap_ref'),
+    });
+  }
+  const guardedCatchStatements = supportsCatchLoopControlThroughFinally
+    ? catchLoopControlLeadingStatements
+    : supportsCatchThrowThroughFinally
+    ? catchThrowLeadingStatements
+    : catchLeadingStatements;
+  catchStatements.push(
+    ...guardedCatchStatements.flatMap((child) => [...lowerStatement(child, context)]),
+  );
+  if (
+    supportsCatchReturnThroughFinally && catchReturnStatement &&
+    completionReturnFlagName && completionReturnValueName && completionReturnRepresentation
+  ) {
+    catchStatements.push(...captureReturnStatements(catchReturnStatement));
+  } else if (supportsCatchTerminalReturn && catchReturnStatement) {
+    catchStatements.push(...lowerStatement(catchReturnStatement, context));
+  }
+  if (supportsCatchLoopControlThroughFinally && catchLoopControlStatement) {
+    catchStatements.push(...captureLoopControlStatements(catchLoopControlStatement));
+  }
+  if (supportsCatchThrowThroughFinally && catchThrowStatement) {
+    catchStatements.push(...lowerStatement(catchThrowStatement, context));
+  }
+  statements.push({
+    kind: 'if',
+    condition: localGetExpression(thrownFlagName, 'i32'),
+    thenBody: catchStatements,
+    elseBody: [],
+  });
+  statements.push(...finallyBlock.flatMap((child) => [...lowerStatement(child, context)]));
+  if (completionReturnFlagName && completionReturnValueName && completionReturnRepresentation) {
+    const activeCompletionTarget = context.completionTargets.at(-1);
+    if (activeCompletionTarget) {
+      if (
+        !activeCompletionTarget.returnFlagName ||
+        !activeCompletionTarget.returnValueName ||
+        activeCompletionTarget.returnRepresentation !== completionReturnRepresentation
+      ) {
+        context.unsupportedKinds.add('try_catch_return_value');
+        statements.push({ kind: 'unsupported_statement', sourceKind: 'try' });
+      } else {
+        statements.push({
+          kind: 'if',
+          condition: localGetExpression(completionReturnFlagName, 'i32'),
+          thenBody: [
+            {
+              kind: 'local_set',
+              name: activeCompletionTarget.returnValueName,
+              value: localGetExpression(completionReturnValueName, completionReturnRepresentation),
+            },
+            {
+              kind: 'local_set',
+              name: activeCompletionTarget.returnFlagName,
+              value: booleanLiteralExpression(true),
+            },
+          ],
+          elseBody: [],
+        });
+      }
+    } else {
+      statements.push({
+        kind: 'if',
+        condition: localGetExpression(completionReturnFlagName, 'i32'),
+        thenBody: [{
+          kind: 'return',
+          value: localGetExpression(completionReturnValueName, completionReturnRepresentation),
+        }],
+        elseBody: [],
+      });
+    }
+  }
+  if (completionBreakFlagName) {
+    const activeCompletionTarget = context.completionTargets.at(-1);
+    if (activeCompletionTarget) {
+      if (!activeCompletionTarget.breakFlagName) {
+        context.unsupportedKinds.add('try_catch_loop_control');
+        statements.push({ kind: 'unsupported_statement', sourceKind: 'try' });
+      } else {
+        statements.push({
+          kind: 'if',
+          condition: localGetExpression(completionBreakFlagName, 'i32'),
+          thenBody: [{
+            kind: 'local_set',
+            name: activeCompletionTarget.breakFlagName,
+            value: booleanLiteralExpression(true),
+          }],
+          elseBody: [],
+        });
+      }
+    } else {
+      statements.push({
+        kind: 'if',
+        condition: localGetExpression(completionBreakFlagName, 'i32'),
+        thenBody: [{ kind: 'break' }],
+        elseBody: [],
+      });
+    }
+  }
+  if (completionContinueFlagName) {
+    const activeCompletionTarget = context.completionTargets.at(-1);
+    if (activeCompletionTarget) {
+      if (!activeCompletionTarget.continueFlagName) {
+        context.unsupportedKinds.add('try_catch_loop_control');
+        statements.push({ kind: 'unsupported_statement', sourceKind: 'try' });
+      } else {
+        statements.push({
+          kind: 'if',
+          condition: localGetExpression(completionContinueFlagName, 'i32'),
+          thenBody: [{
+            kind: 'local_set',
+            name: activeCompletionTarget.continueFlagName,
+            value: booleanLiteralExpression(true),
+          }],
+          elseBody: [],
+        });
+      }
+    } else {
+      statements.push({
+        kind: 'if',
+        condition: localGetExpression(completionContinueFlagName, 'i32'),
+        thenBody: [{ kind: 'continue' }],
+        elseBody: [],
+      });
+    }
+  }
+  return statements;
+}
+
 function lowerTryStatement(
   statement: Extract<SourceStatementIR, { kind: 'try' }>,
   context: FunctionLoweringContext,
 ): readonly SemanticStatementIR[] {
   if (statement.catchBlock || statement.catchBinding) {
-    context.unsupportedKinds.add('try_catch');
-    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+    return lowerTryCatchStatement(statement, context);
   }
   const finallyBlock = statement.finallyBlock ?? [];
-  if (
-    sourceStatementsContainControlTransfer(statement.tryBlock) ||
-    sourceStatementsContainControlTransfer(finallyBlock)
-  ) {
+  if (sourceStatementsContainControlTransfer(finallyBlock)) {
+    context.unsupportedKinds.add('try_finally_control_flow');
+    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+  }
+  const loopControlIndex = statement.tryBlock.findIndex((child) =>
+    child.kind === 'break' || child.kind === 'continue'
+  );
+  if (loopControlIndex >= 0) {
+    const leadingTryStatements = statement.tryBlock.slice(0, loopControlIndex);
+    const controlStatement = statement.tryBlock[loopControlIndex] as Extract<
+      SourceStatementIR,
+      { kind: 'break' | 'continue' }
+    >;
+    if (
+      statement.tryBlock.length !== loopControlIndex + 1 ||
+      sourceStatementsContainControlTransfer(leadingTryStatements)
+    ) {
+      context.unsupportedKinds.add('try_finally_control_flow');
+      return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+    }
+    return [
+      ...leadingTryStatements.flatMap((child) => [...lowerStatement(child, context)]),
+      ...finallyBlock.flatMap((child) => [...lowerStatement(child, context)]),
+      ...lowerStatement(controlStatement, context),
+    ];
+  }
+  const returnIndex = statement.tryBlock.findIndex((child) => child.kind === 'return');
+  if (returnIndex >= 0) {
+    const leadingTryStatements = statement.tryBlock.slice(0, returnIndex);
+    const returnStatement = statement.tryBlock[returnIndex] as Extract<
+      SourceStatementIR,
+      { kind: 'return' }
+    >;
+    if (
+      statement.tryBlock.length !== returnIndex + 1 ||
+      sourceStatementsContainControlTransfer(leadingTryStatements)
+    ) {
+      context.unsupportedKinds.add('try_finally_control_flow');
+      return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+    }
+    const leadingLoweredStatements = leadingTryStatements.flatMap((child) => [
+      ...lowerStatement(child, context),
+    ]);
+    const activeCompletionTarget = context.completionTargets.at(-1);
+    if (activeCompletionTarget) {
+      return [
+        ...leadingLoweredStatements,
+        ...captureReturnCompletion(returnStatement, activeCompletionTarget, context, 'try'),
+        ...finallyBlock.flatMap((child) => [...lowerStatement(child, context)]),
+      ];
+    }
+    const rawValue = returnStatement.expression
+      ? lowerExpression(returnStatement.expression, context)
+      : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+    const value = adaptExpressionToSemanticType(
+      rawValue,
+      context.currentResultType,
+      context,
+    ) ?? rawValue;
+    const resultName = nextTempLocalName(context, 'try_finally_return');
+    addLocal(context, resultName, value.representation);
+    return [
+      ...leadingLoweredStatements,
+      ...takePendingStatements(context),
+      { kind: 'local_set', name: resultName, value },
+      ...finallyBlock.flatMap((child) => [...lowerStatement(child, context)]),
+      { kind: 'return', value: localGetExpression(resultName, value.representation) },
+    ];
+  }
+  const throwIndex = statement.tryBlock.findIndex((child) => child.kind === 'throw');
+  if (throwIndex >= 0) {
+    const leadingTryStatements = statement.tryBlock.slice(0, throwIndex);
+    const throwStatement = statement.tryBlock[throwIndex] as Extract<
+      SourceStatementIR,
+      { kind: 'throw' }
+    >;
+    if (
+      statement.tryBlock.length !== throwIndex + 1 ||
+      sourceStatementsContainControlTransfer(leadingTryStatements) ||
+      !context.throwTargets.at(-1)
+    ) {
+      context.unsupportedKinds.add('try_finally_control_flow');
+      return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+    }
+    return [
+      ...leadingTryStatements.flatMap((child) => [...lowerStatement(child, context)]),
+      ...lowerStatement(throwStatement, context),
+      ...finallyBlock.flatMap((child) => [...lowerStatement(child, context)]),
+    ];
+  }
+  if (statement.tryBlock.length === 1 && statement.tryBlock[0]?.kind === 'try') {
+    const needsNestedReturn = sourceStatementsContainReturn(statement.tryBlock);
+    const needsNestedBreak = sourceStatementsContainLoopControl(statement.tryBlock, 'break');
+    const needsNestedContinue = sourceStatementsContainLoopControl(statement.tryBlock, 'continue');
+    const completionTarget: SourceSemanticCompletionTarget = {
+      ...(needsNestedReturn ? createReturnCompletionTarget(context, 'try_finally_nested') : {}),
+      ...(needsNestedBreak || needsNestedContinue
+        ? createLoopControlCompletionTarget(
+          context,
+          'try_finally_nested',
+          needsNestedBreak,
+          needsNestedContinue,
+        )
+        : {}),
+    };
+    if (!needsNestedReturn && !needsNestedBreak && !needsNestedContinue) {
+      context.unsupportedKinds.add('try_finally_control_flow');
+      return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+    }
+    context.completionTargets.push(completionTarget);
+    let tryStatements: readonly SemanticStatementIR[];
+    try {
+      tryStatements = statement.tryBlock.flatMap((child) => [...lowerStatement(child, context)]);
+    } finally {
+      context.completionTargets.pop();
+    }
+    return [
+      ...(needsNestedReturn ? [initializeReturnCompletionTarget(completionTarget)] : []),
+      ...initializeLoopControlCompletionTarget(completionTarget),
+      ...tryStatements,
+      ...finallyBlock.flatMap((child) => [...lowerStatement(child, context)]),
+      ...(needsNestedReturn ? [dispatchReturnCompletionTarget(completionTarget)] : []),
+      ...dispatchLoopControlCompletionTarget(completionTarget),
+    ];
+  }
+  if (sourceStatementsContainControlTransfer(statement.tryBlock)) {
     context.unsupportedKinds.add('try_finally_control_flow');
     return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
   }
@@ -2263,6 +5826,88 @@ function collectSourceExpressionIdentifierReads(
   }
 }
 
+function collectSourceExpressionAssignedNames(
+  expression: SourceExpressionIR,
+  names: string[],
+): void {
+  switch (expression.kind) {
+    case 'assignment_expression':
+      if (expression.left.kind === 'identifier') {
+        names.push(expression.left.name);
+      } else if (expression.left.kind === 'element_access') {
+        collectSourceExpressionIdentifierReads(expression.left.object, names);
+        if (expression.left.index) {
+          collectSourceExpressionIdentifierReads(expression.left.index, names);
+        }
+      } else if (expression.left.kind === 'property_access') {
+        collectSourceExpressionIdentifierReads(expression.left.object, names);
+      } else {
+        collectSourceExpressionIdentifierReads(expression.left, names);
+      }
+      collectSourceExpressionAssignedNames(expression.right, names);
+      break;
+    case 'update_expression':
+      if (expression.operand.kind === 'identifier') {
+        names.push(expression.operand.name);
+      } else {
+        collectSourceExpressionIdentifierReads(expression.operand, names);
+      }
+      break;
+    case 'property_access':
+      collectSourceExpressionAssignedNames(expression.object, names);
+      break;
+    case 'element_access':
+      collectSourceExpressionAssignedNames(expression.object, names);
+      if (expression.index) {
+        collectSourceExpressionAssignedNames(expression.index, names);
+      }
+      break;
+    case 'binary_expression':
+    case 'logical_expression':
+      collectSourceExpressionAssignedNames(expression.left, names);
+      collectSourceExpressionAssignedNames(expression.right, names);
+      break;
+    case 'unary_expression':
+      collectSourceExpressionAssignedNames(expression.operand, names);
+      break;
+    case 'await_expression':
+      collectSourceExpressionAssignedNames(expression.expression, names);
+      break;
+    case 'conditional_expression':
+      collectSourceExpressionAssignedNames(expression.test, names);
+      collectSourceExpressionAssignedNames(expression.consequent, names);
+      collectSourceExpressionAssignedNames(expression.alternate, names);
+      break;
+    case 'call_expression':
+    case 'new_expression':
+      collectSourceExpressionAssignedNames(expression.callee, names);
+      expression.args.forEach((arg) => collectSourceExpressionAssignedNames(arg, names));
+      break;
+    case 'array_literal':
+      expression.elements.forEach((element) =>
+        collectSourceExpressionAssignedNames(element, names)
+      );
+      break;
+    case 'object_literal':
+      expression.properties.forEach((property) => {
+        if (property.computedName) {
+          collectSourceExpressionAssignedNames(property.computedName, names);
+        }
+        collectSourceExpressionAssignedNames(property.value, names);
+      });
+      break;
+    case 'arrow_function':
+    case 'identifier':
+    case 'literal':
+    case 'unknown_expression':
+      break;
+    default: {
+      const exhaustiveCheck: never = expression;
+      return exhaustiveCheck;
+    }
+  }
+}
+
 function collectSourceStatementIdentifierReads(
   statement: SourceStatementIR,
   names: string[],
@@ -2339,6 +5984,83 @@ function collectSourceStatementIdentifierReads(
     case 'block':
       statement.statements.forEach((child) => collectSourceStatementIdentifierReads(child, names));
       break;
+    case 'break':
+    case 'continue':
+    case 'unknown_statement':
+      break;
+    default: {
+      const exhaustiveCheck: never = statement;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function collectSourceStatementAssignedNames(
+  statement: SourceStatementIR,
+  names: string[],
+): void {
+  switch (statement.kind) {
+    case 'expression_statement':
+      collectSourceExpressionAssignedNames(statement.expression, names);
+      break;
+    case 'return':
+      if (statement.expression) {
+        collectSourceExpressionAssignedNames(statement.expression, names);
+      }
+      break;
+    case 'if':
+      collectSourceExpressionAssignedNames(statement.test, names);
+      statement.consequent.forEach((child) => collectSourceStatementAssignedNames(child, names));
+      statement.alternate.forEach((child) => collectSourceStatementAssignedNames(child, names));
+      break;
+    case 'while':
+      collectSourceExpressionAssignedNames(statement.test, names);
+      statement.body.forEach((child) => collectSourceStatementAssignedNames(child, names));
+      break;
+    case 'do_while':
+      statement.body.forEach((child) => collectSourceStatementAssignedNames(child, names));
+      collectSourceExpressionAssignedNames(statement.test, names);
+      break;
+    case 'for':
+      if (statement.initializer?.kind !== 'variable_declaration' && statement.initializer) {
+        collectSourceExpressionAssignedNames(statement.initializer, names);
+      }
+      if (statement.test) {
+        collectSourceExpressionAssignedNames(statement.test, names);
+      }
+      if (statement.incrementor) {
+        collectSourceExpressionAssignedNames(statement.incrementor, names);
+      }
+      statement.body.forEach((child) => collectSourceStatementAssignedNames(child, names));
+      break;
+    case 'for_of':
+      if (!('kind' in statement.left && statement.left.kind.endsWith('_binding'))) {
+        collectSourceExpressionAssignedNames(statement.left as SourceExpressionIR, names);
+      }
+      collectSourceExpressionAssignedNames(statement.right, names);
+      statement.body.forEach((child) => collectSourceStatementAssignedNames(child, names));
+      break;
+    case 'switch':
+      collectSourceExpressionAssignedNames(statement.expression, names);
+      statement.clauses.forEach((clause) => {
+        if (clause.expression) {
+          collectSourceExpressionAssignedNames(clause.expression, names);
+        }
+        clause.statements.forEach((child) => collectSourceStatementAssignedNames(child, names));
+      });
+      break;
+    case 'throw':
+      collectSourceExpressionAssignedNames(statement.expression, names);
+      break;
+    case 'try':
+      statement.tryBlock.forEach((child) => collectSourceStatementAssignedNames(child, names));
+      statement.catchBlock?.forEach((child) => collectSourceStatementAssignedNames(child, names));
+      statement.finallyBlock?.forEach((child) => collectSourceStatementAssignedNames(child, names));
+      break;
+    case 'block':
+      statement.statements.forEach((child) => collectSourceStatementAssignedNames(child, names));
+      break;
+    case 'variable_declaration':
     case 'break':
     case 'continue':
     case 'unknown_statement':
@@ -2464,7 +6186,11 @@ function lowerArrowFunctionExpression(
   const unsupportedKinds = new Set<string>();
   const closureContext: FunctionLoweringContext = {
     functionName: `closure_source_${parentContext.functionName}_${closureFunctionId}`,
+    sourceFunctionName: parentContext.sourceFunctionName,
+    asyncFunction: false,
+    currentResultType: signatureType.result,
     functionResultArrayLocals: parentContext.functionResultArrayLocals,
+    functionParamTypes: parentContext.functionParamTypes,
     functionResultRepresentations: parentContext.functionResultRepresentations,
     functionResultTypes: parentContext.functionResultTypes,
     localRepresentations,
@@ -2474,16 +6200,21 @@ function lowerArrowFunctionExpression(
     closureLocals: new Map(),
     constructorLocals: new Map(),
     localDeclarationKinds,
-    localTypesByKey: new Map(),
+    localTypesByKey: parentContext.localTypesByKey,
+    mapLocals: new Map(),
     moduleState: parentContext.moduleState,
     objectLayoutsByKey: parentContext.objectLayoutsByKey,
     objectLocals: new Map(),
+    setLocals: new Map(),
+    unionLocals: new Map(),
     classesByName: parentContext.classesByName,
     pendingStatements: [],
     runtimeFamilies: new Set(),
     stringLiteralIds: parentContext.stringLiteralIds,
     stringLiterals: parentContext.stringLiterals,
     switchBreakLocalStack: [],
+    throwTargets: [],
+    completionTargets: [],
     tempIndex: 0,
     unsupportedKinds,
   };
@@ -2495,6 +6226,14 @@ function lowerArrowFunctionExpression(
     const objectLocal = objectLocalForParameterType(paramType, closureContext);
     if (objectLocal) {
       closureContext.objectLocals.set(param.name, objectLocal);
+    }
+    const mapLocal = mapLocalInfoForSemanticType(paramType);
+    if (mapLocal) {
+      closureContext.mapLocals.set(param.name, mapLocal);
+    }
+    const setLocal = setLocalInfoForSemanticType(paramType);
+    if (setLocal) {
+      closureContext.setLocals.set(param.name, setLocal);
     }
     const closureLocal = closureLocalForSemanticType(paramType, closureContext);
     if (closureLocal) {
@@ -3164,6 +6903,53 @@ function lowerStatement(
           }
         }
         if (declaration.initializer.kind === 'new_expression') {
+          const localType = localTypeForBinding(declaration.binding, context);
+          if (
+            declaration.initializer.callee.kind === 'identifier' &&
+            declaration.initializer.callee.name === 'Map'
+          ) {
+            const mapLocal = mapLocalInfoForSemanticType(localType);
+            if (!mapLocal) {
+              context.unsupportedKinds.add('map_new');
+              return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
+            }
+            addLocal(context, declaration.binding.name, 'heap_ref');
+            context.localDeclarationKinds.set(
+              declaration.binding.name,
+              statement.declarationKind,
+            );
+            context.mapLocals.set(declaration.binding.name, mapLocal);
+            context.runtimeFamilies.add('map');
+            return [{
+              kind: 'map_new',
+              targetName: declaration.binding.name,
+              storage: true,
+            }];
+          }
+          if (
+            declaration.initializer.callee.kind === 'identifier' &&
+            declaration.initializer.callee.name === 'Set'
+          ) {
+            const setLocal = setLocalInfoForSemanticType(localType);
+            if (!setLocal) {
+              context.unsupportedKinds.add('set_new');
+              return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
+            }
+            addLocal(context, declaration.binding.name, 'heap_ref');
+            context.localDeclarationKinds.set(
+              declaration.binding.name,
+              statement.declarationKind,
+            );
+            context.setLocals.set(declaration.binding.name, setLocal);
+            context.runtimeFamilies.add('set');
+            context.runtimeFamilies.add('array');
+            return [{
+              kind: 'set_new',
+              targetName: declaration.binding.name,
+              valuesArrayType: setLocal.valuesArrayType,
+              valuesElementType: setLocal.valuesElementType,
+            }];
+          }
           const classConstruction = lowerClassConstructionDeclaration(
             declaration.binding.name,
             declaration.initializer,
@@ -3310,7 +7096,12 @@ function lowerStatement(
         }
         const value = lowerExpression(declaration.initializer, context);
         const statements = takePendingStatements(context);
-        addLocal(context, declaration.binding.name, value.representation);
+        const localType = localTypeForBinding(declaration.binding, context);
+        addLocal(
+          context,
+          declaration.binding.name,
+          isFiniteUnionSemanticType(localType) ? 'tagged_ref' : value.representation,
+        );
         context.localDeclarationKinds.set(
           declaration.binding.name,
           statement.declarationKind,
@@ -3323,11 +7114,36 @@ function lowerStatement(
         if (arrayLocal) {
           context.arrayLocals.set(declaration.binding.name, arrayLocal);
         }
+        if (isFiniteUnionSemanticType(localType)) {
+          const unionValue = adaptExpressionToSemanticType(value, localType, context);
+          if (!unionValue) {
+            context.unsupportedKinds.add('finite_union_assignment');
+            return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
+          }
+          context.unionLocals.set(declaration.binding.name, localType!);
+          return [...statements, {
+            kind: 'local_set',
+            name: declaration.binding.name,
+            value: unionValue,
+          }];
+        }
         const objectLocal = value.representation === 'heap_ref'
           ? objectLocalInfoForRead(declaration.initializer, value, context)
           : undefined;
         if (objectLocal) {
           context.objectLocals.set(declaration.binding.name, objectLocal);
+        }
+        const mapLocal = value.representation === 'heap_ref'
+          ? mapLocalInfoForRead(declaration.initializer, value, context)
+          : undefined;
+        if (mapLocal) {
+          context.mapLocals.set(declaration.binding.name, mapLocal);
+        }
+        const setLocal = value.representation === 'heap_ref'
+          ? setLocalInfoForRead(declaration.initializer, value, context)
+          : undefined;
+        if (setLocal) {
+          context.setLocals.set(declaration.binding.name, setLocal);
         }
         const closureLocal = value.representation === 'closure_ref'
           ? closureLocalInfoForRead(declaration.initializer, value, context)
@@ -3352,17 +7168,29 @@ function lowerStatement(
             context.unsupportedKinds.add(`unbound_assignment:${target}`);
             return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
           }
+          const boxedValueType = context.boxedLocals.get(target);
           const right = lowerExpression(assignment.right, context);
           const compoundOperator = compoundAssignmentBinaryOperator(assignment.operator);
           let value = right;
           if (compoundOperator) {
-            const left: SemanticExpressionIR = {
-              kind: 'local_get',
-              name: target,
-              representation: targetRepresentation,
-            };
+            const left: SemanticExpressionIR = targetRepresentation === 'box_ref' &&
+                boxedValueType
+              ? {
+                kind: 'box_get',
+                box: localGetExpression(target, 'box_ref'),
+                valueType: boxedValueType,
+                representation: boxedValueType,
+              }
+              : {
+                kind: 'local_get',
+                name: target,
+                representation: targetRepresentation,
+              };
             const binary = binaryOperatorForSource(compoundOperator, left, right);
-            if (!binary || binary.representation !== targetRepresentation) {
+            const expectedRepresentation = targetRepresentation === 'box_ref' && boxedValueType
+              ? boxedValueType
+              : targetRepresentation;
+            if (!binary || binary.representation !== expectedRepresentation) {
               context.unsupportedKinds.add(`compound_assignment:${assignment.operator}`);
               return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
             }
@@ -3393,6 +7221,22 @@ function lowerStatement(
           } else {
             context.objectLocals.delete(target);
           }
+          const mapLocal = !compoundOperator && value.representation === 'heap_ref'
+            ? mapLocalInfoForRead(assignment.right, value, context)
+            : undefined;
+          if (mapLocal) {
+            context.mapLocals.set(target, mapLocal);
+          } else {
+            context.mapLocals.delete(target);
+          }
+          const setLocal = !compoundOperator && value.representation === 'heap_ref'
+            ? setLocalInfoForRead(assignment.right, value, context)
+            : undefined;
+          if (setLocal) {
+            context.setLocals.set(target, setLocal);
+          } else {
+            context.setLocals.delete(target);
+          }
           const closureLocal = !compoundOperator && value.representation === 'closure_ref'
             ? closureLocalInfoForRead(assignment.right, value, context)
             : undefined;
@@ -3400,6 +7244,18 @@ function lowerStatement(
             context.closureLocals.set(target, closureLocal);
           } else {
             context.closureLocals.delete(target);
+          }
+          if (targetRepresentation === 'box_ref' && boxedValueType) {
+            if (value.representation !== boxedValueType) {
+              context.unsupportedKinds.add(`boxed_assignment:${target}`);
+              return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
+            }
+            return [...statements, {
+              kind: 'box_set',
+              box: localGetExpression(target, 'box_ref'),
+              value,
+              valueType: boxedValueType,
+            }];
           }
           return [...statements, { kind: 'local_set', name: target, value }];
         }
@@ -3516,9 +7372,38 @@ function lowerStatement(
       return [...takePendingStatements(context), { kind: 'expression', value }];
     }
     case 'return': {
-      const value = statement.expression
+      const activeCompletionTarget = context.completionTargets.at(-1);
+      if (activeCompletionTarget) {
+        return captureReturnCompletion(
+          statement,
+          activeCompletionTarget,
+          context,
+          'return',
+        );
+      }
+      const rawValue = statement.expression
         ? lowerExpression(statement.expression, context)
         : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+      if (context.asyncFunction && context.currentResultType?.kind === 'promise') {
+        const promiseValue = promiseResolveExpressionForValue(
+          rawValue,
+          context.currentResultType.value,
+          context,
+        );
+        if (!promiseValue) {
+          context.unsupportedKinds.add('async_return_value');
+          return [{ kind: 'unsupported_statement', sourceKind: 'return' }];
+        }
+        return [...takePendingStatements(context), {
+          kind: 'return',
+          value: promiseValue,
+        }];
+      }
+      const value = adaptExpressionToSemanticType(
+        rawValue,
+        context.currentResultType,
+        context,
+      ) ?? rawValue;
       return [...takePendingStatements(context), {
         kind: 'return',
         value,
@@ -3608,13 +7493,47 @@ function lowerStatement(
           value: booleanLiteralExpression(false),
         }];
       }
+      const activeCompletionTarget = context.completionTargets.at(-1);
+      if (activeCompletionTarget?.breakFlagName) {
+        return captureLoopControlCompletion('break', activeCompletionTarget, context);
+      }
       return [{ kind: 'break' }];
     }
-    case 'continue':
+    case 'continue': {
+      const activeCompletionTarget = context.completionTargets.at(-1);
+      if (activeCompletionTarget?.continueFlagName) {
+        return captureLoopControlCompletion('continue', activeCompletionTarget, context);
+      }
       return [{ kind: 'continue' }];
+    }
     case 'throw': {
       const value = lowerExpression(statement.expression, context);
-      return [...takePendingStatements(context), { kind: 'throw_tagged', value }];
+      const pendingStatements = takePendingStatements(context);
+      const throwTarget = context.throwTargets.at(-1);
+      if (throwTarget) {
+        const taggedValue = taggedUnionExpressionForValue(value, context);
+        if (!taggedValue) {
+          context.unsupportedKinds.add('try_catch_throw_value');
+          return [{ kind: 'unsupported_statement', sourceKind: 'throw' }];
+        }
+        return [
+          ...pendingStatements,
+          {
+            kind: 'local_set',
+            name: throwTarget.thrownHeapName,
+            value: value.representation === 'heap_ref'
+              ? value
+              : { kind: 'heap_null', representation: 'heap_ref' },
+          },
+          { kind: 'local_set', name: throwTarget.thrownValueName, value: taggedValue },
+          {
+            kind: 'local_set',
+            name: throwTarget.thrownFlagName,
+            value: booleanLiteralExpression(true),
+          },
+        ];
+      }
+      return [...pendingStatements, { kind: 'throw_tagged', value }];
     }
     case 'block':
       return statement.statements.flatMap((child) => [...lowerStatement(child, context)]);
@@ -3640,6 +7559,2256 @@ function lowerFunctionBody(
 ): readonly SemanticStatementIR[] {
   const body = func.body.flatMap((statement) => [...lowerStatement(statement, context)]);
   return body.length > 0 ? [...body, { kind: 'trap' }] : [{ kind: 'trap' }];
+}
+
+type SourceAwaitAssignmentTarget =
+  | { kind: 'identifier'; name: string }
+  | { kind: 'array_element'; objectName: string; index: SourceExpressionIR }
+  | {
+    kind: 'property';
+    objectName: string;
+    propertyName: string;
+    span: SourceExpressionIR['span'];
+  };
+
+interface SourceAwaitStep {
+  assignmentTarget?: SourceAwaitAssignmentTarget;
+  binding?: Extract<SourceBindingIR, { kind: 'identifier_binding' }>;
+  leadingStatements: readonly SourceStatementIR[];
+  source: SourceExpressionIR;
+  type?: SemanticTypeIR;
+  representation?: CompilerValueType;
+}
+
+interface SourceAwaitContinuationOptions {
+  rejectionCatch?: {
+    afterStatements: readonly SourceStatementIR[];
+    catchBlock: readonly SourceStatementIR[];
+    catchBinding?: SourceBindingIR;
+    returnStatement: Extract<SourceStatementIR, { kind: 'return' }>;
+    catchReturnStatement?: Extract<SourceStatementIR, { kind: 'return' }>;
+    catchThrowStatement?: Extract<SourceStatementIR, { kind: 'throw' }>;
+  };
+  rejectionFinalizerStatements?: readonly SourceStatementIR[];
+  finallyBlock?: readonly SourceStatementIR[];
+  finallyReturnStatement?: Extract<SourceStatementIR, { kind: 'return' }>;
+  finallyThrowStatement?: Extract<SourceStatementIR, { kind: 'throw' }>;
+  completion?: AsyncCompletionNames;
+}
+
+interface SourceAsyncCapture {
+  name: string;
+  valueType: CompilerValueType;
+  arrayLocal?: SourceSemanticArrayLocal;
+  closureLocal?: SourceSemanticClosureLocal;
+  constructorLocal?: SourceSemanticConstructorLocal;
+  mapLocal?: SourceSemanticMapLocal;
+  objectLocal?: SourceSemanticObjectLocal;
+  setLocal?: SourceSemanticSetLocal;
+  unionLocal?: SemanticTypeIR;
+}
+
+function registerSemanticLocalMetadata(
+  context: FunctionLoweringContext,
+  name: string,
+  type: SemanticTypeIR,
+): void {
+  const arrayLocal = arrayLocalInfoForSemanticType(type);
+  if (arrayLocal) {
+    context.arrayLocals.set(name, arrayLocal);
+  }
+  const objectLocal = objectLocalForParameterType(type, context);
+  if (objectLocal) {
+    context.objectLocals.set(name, objectLocal);
+  }
+  const mapLocal = mapLocalInfoForSemanticType(type);
+  if (mapLocal) {
+    context.mapLocals.set(name, mapLocal);
+  }
+  const setLocal = setLocalInfoForSemanticType(type);
+  if (setLocal) {
+    context.setLocals.set(name, setLocal);
+  }
+  const closureLocal = closureLocalForSemanticType(type, context);
+  if (closureLocal) {
+    context.closureLocals.set(name, closureLocal);
+  }
+}
+
+function sourceAsyncCaptureForName(
+  context: FunctionLoweringContext,
+  name: string,
+): SourceAsyncCapture | undefined {
+  const representation = context.localRepresentations.get(name);
+  if (!representation) {
+    return undefined;
+  }
+  const valueType = representation === 'box_ref' ? context.boxedLocals.get(name) : representation;
+  if (!valueType) {
+    return undefined;
+  }
+  return {
+    name,
+    valueType,
+    arrayLocal: context.arrayLocals.get(name),
+    closureLocal: context.closureLocals.get(name),
+    constructorLocal: context.constructorLocals.get(name),
+    mapLocal: context.mapLocals.get(name),
+    objectLocal: context.objectLocals.get(name),
+    setLocal: context.setLocals.get(name),
+    unionLocal: context.unionLocals.get(name),
+  };
+}
+
+function sourceAsyncCapturesForLiveNames(
+  context: FunctionLoweringContext,
+  liveNames: readonly string[],
+): readonly SourceAsyncCapture[] {
+  const captures: SourceAsyncCapture[] = [];
+  const seen = new Set<string>();
+  for (const name of liveNames) {
+    if (seen.has(name)) {
+      continue;
+    }
+    seen.add(name);
+    const capture = sourceAsyncCaptureForName(context, name);
+    if (capture) {
+      captures.push(capture);
+    }
+  }
+  return captures;
+}
+
+function registerSourceAsyncCapture(
+  context: FunctionLoweringContext,
+  capture: SourceAsyncCapture,
+): void {
+  context.localRepresentations.set(capture.name, 'box_ref');
+  context.boxedLocals.set(capture.name, capture.valueType);
+  context.localDeclarationKinds.set(capture.name, 'capture');
+  if (capture.arrayLocal) {
+    context.arrayLocals.set(capture.name, capture.arrayLocal);
+  }
+  if (capture.closureLocal) {
+    context.closureLocals.set(capture.name, capture.closureLocal);
+  }
+  if (capture.constructorLocal) {
+    context.constructorLocals.set(capture.name, capture.constructorLocal);
+  }
+  if (capture.mapLocal) {
+    context.mapLocals.set(capture.name, capture.mapLocal);
+  }
+  if (capture.objectLocal) {
+    context.objectLocals.set(capture.name, capture.objectLocal);
+  }
+  if (capture.setLocal) {
+    context.setLocals.set(capture.name, capture.setLocal);
+  }
+  if (capture.unionLocal) {
+    context.unionLocals.set(capture.name, capture.unionLocal);
+  }
+}
+
+function createAsyncAwaitContinuationContext(
+  parentContext: FunctionLoweringContext,
+  functionName: string,
+  captures: readonly SourceAsyncCapture[],
+): FunctionLoweringContext {
+  const localRepresentations = new Map<string, CompilerValueType>([
+    ['capture_target_0', 'box_ref'],
+    ['promise_value', 'tagged_ref'],
+  ]);
+  const boxedLocals = new Map<string, CompilerValueType>();
+  const localDeclarationKinds = new Map<string, SourceSemanticLocalDeclarationKind>([
+    ['capture_target_0', 'capture'],
+    ['promise_value', 'param'],
+  ]);
+  const context: FunctionLoweringContext = {
+    functionName,
+    sourceFunctionName: parentContext.sourceFunctionName,
+    asyncFunction: false,
+    currentResultType: promiseReactionTaggedValueType(),
+    functionResultArrayLocals: parentContext.functionResultArrayLocals,
+    functionParamTypes: parentContext.functionParamTypes,
+    functionResultRepresentations: parentContext.functionResultRepresentations,
+    functionResultTypes: parentContext.functionResultTypes,
+    localRepresentations,
+    locals: [],
+    arrayLocals: new Map(),
+    boxedLocals,
+    closureLocals: new Map(),
+    constructorLocals: new Map(),
+    localDeclarationKinds,
+    localTypesByKey: parentContext.localTypesByKey,
+    mapLocals: new Map(),
+    moduleState: parentContext.moduleState,
+    objectLayoutsByKey: parentContext.objectLayoutsByKey,
+    objectLocals: new Map(),
+    setLocals: new Map(),
+    unionLocals: new Map(),
+    classesByName: parentContext.classesByName,
+    pendingStatements: [],
+    runtimeFamilies: new Set(['finite_union', 'promise']),
+    stringLiteralIds: parentContext.stringLiteralIds,
+    stringLiterals: parentContext.stringLiterals,
+    switchBreakLocalStack: [],
+    throwTargets: [],
+    completionTargets: [],
+    tempIndex: 0,
+    unsupportedKinds: new Set(),
+  };
+  captures.forEach((capture) => registerSourceAsyncCapture(context, capture));
+  return context;
+}
+
+function sourceAsyncCaptureExpression(
+  capture: SourceAsyncCapture,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR {
+  const representation = context.localRepresentations.get(capture.name);
+  if (representation === 'box_ref' && context.boxedLocals.get(capture.name) === capture.valueType) {
+    return localGetExpression(capture.name, 'box_ref');
+  }
+  if (representation) {
+    return {
+      kind: 'box_new',
+      value: localGetExpression(capture.name, representation),
+      valueType: capture.valueType,
+      representation: 'box_ref',
+    };
+  }
+  context.unsupportedKinds.add(`async_await_capture:${capture.name}`);
+  return { kind: 'undefined_literal', representation: 'tagged_ref' };
+}
+
+function asyncAwaitContinuationCaptureValues(
+  captures: readonly SourceAsyncCapture[],
+  targetCapture: SemanticExpressionIR,
+  context: FunctionLoweringContext,
+): readonly {
+  value: SemanticExpressionIR;
+  valueType: CompilerValueType;
+}[] {
+  const captureValues: {
+    value: SemanticExpressionIR;
+    valueType: CompilerValueType;
+  }[] = [
+    { value: targetCapture, valueType: 'tagged_ref' },
+  ];
+  for (const capture of captures) {
+    captureValues.push({
+      value: sourceAsyncCaptureExpression(capture, context),
+      valueType: capture.valueType,
+    });
+  }
+  return captureValues;
+}
+
+function collectSourceAwaitAssignmentTargetLiveNames(
+  target: SourceAwaitAssignmentTarget | undefined,
+  names: string[],
+): void {
+  if (!target) {
+    return;
+  }
+  switch (target.kind) {
+    case 'identifier':
+      names.push(target.name);
+      break;
+    case 'array_element':
+      names.push(target.objectName);
+      collectSourceExpressionIdentifierReads(target.index, names);
+      break;
+    case 'property':
+      names.push(target.objectName);
+      break;
+    default: {
+      const exhaustiveCheck: never = target;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function mergeSourceAsyncCaptures(
+  left: readonly SourceAsyncCapture[],
+  right: readonly SourceAsyncCapture[],
+): readonly SourceAsyncCapture[] {
+  const captures: SourceAsyncCapture[] = [];
+  const seen = new Set<string>();
+  for (const capture of [...left, ...right]) {
+    if (seen.has(capture.name)) {
+      continue;
+    }
+    seen.add(capture.name);
+    captures.push(capture);
+  }
+  return captures;
+}
+
+function sourceAsyncLiveNamesAfterAwait(
+  steps: readonly SourceAwaitStep[],
+  index: number,
+  trailingStatements: readonly SourceStatementIR[],
+  returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+): readonly string[] {
+  const names: string[] = [];
+  collectSourceAwaitAssignmentTargetLiveNames(steps[index]?.assignmentTarget, names);
+  for (let nextIndex = index + 1; nextIndex < steps.length; nextIndex += 1) {
+    collectSourceAwaitAssignmentTargetLiveNames(steps[nextIndex]!.assignmentTarget, names);
+    steps[nextIndex]!.leadingStatements.forEach((statement) =>
+      collectSourceStatementIdentifierReads(statement, names)
+    );
+    collectSourceExpressionIdentifierReads(steps[nextIndex]!.source, names);
+  }
+  trailingStatements.forEach((statement) =>
+    collectSourceStatementIdentifierReads(statement, names)
+  );
+  if (returnStatement.expression) {
+    collectSourceExpressionIdentifierReads(returnStatement.expression, names);
+  }
+  return names;
+}
+
+function sourceAsyncLiveNamesForStatements(
+  statements: readonly SourceStatementIR[],
+): readonly string[] {
+  const names: string[] = [];
+  statements.forEach((statement) => {
+    collectSourceStatementIdentifierReads(statement, names);
+    collectSourceStatementAssignedNames(statement, names);
+  });
+  return names;
+}
+
+function sourceAsyncLiveNamesForCatchContinuation(
+  catchInfo: NonNullable<SourceAwaitContinuationOptions['rejectionCatch']>,
+): readonly string[] {
+  const names = [...sourceAsyncLiveNamesForStatements(catchInfo.catchBlock)];
+  catchInfo.afterStatements.forEach((statement) => {
+    collectSourceStatementIdentifierReads(statement, names);
+    collectSourceStatementAssignedNames(statement, names);
+  });
+  if (catchInfo.returnStatement.expression) {
+    collectSourceExpressionIdentifierReads(catchInfo.returnStatement.expression, names);
+  }
+  return names;
+}
+
+function sourceAsyncLoopLiveNames(
+  statement: Extract<SourceStatementIR, { kind: 'while' }>,
+  afterStatements: readonly SourceStatementIR[],
+  returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+): readonly string[] {
+  const names: string[] = [];
+  collectSourceExpressionIdentifierReads(statement.test, names);
+  statement.body.forEach((child) => collectSourceStatementIdentifierReads(child, names));
+  afterStatements.forEach((child) => collectSourceStatementIdentifierReads(child, names));
+  if (returnStatement.expression) {
+    collectSourceExpressionIdentifierReads(returnStatement.expression, names);
+  }
+  return names;
+}
+
+function sourceExpressionContainsAwaitExpression(expression: SourceExpressionIR): boolean {
+  switch (expression.kind) {
+    case 'await_expression':
+      return true;
+    case 'property_access':
+      return sourceExpressionContainsAwaitExpression(expression.object);
+    case 'element_access':
+      return sourceExpressionContainsAwaitExpression(expression.object) ||
+        (expression.index ? sourceExpressionContainsAwaitExpression(expression.index) : false);
+    case 'binary_expression':
+    case 'logical_expression':
+      return sourceExpressionContainsAwaitExpression(expression.left) ||
+        sourceExpressionContainsAwaitExpression(expression.right);
+    case 'unary_expression':
+    case 'update_expression':
+      return sourceExpressionContainsAwaitExpression(expression.operand);
+    case 'conditional_expression':
+      return sourceExpressionContainsAwaitExpression(expression.test) ||
+        sourceExpressionContainsAwaitExpression(expression.consequent) ||
+        sourceExpressionContainsAwaitExpression(expression.alternate);
+    case 'assignment_expression':
+      return sourceExpressionContainsAwaitExpression(expression.left) ||
+        sourceExpressionContainsAwaitExpression(expression.right);
+    case 'call_expression':
+    case 'new_expression':
+      return sourceExpressionContainsAwaitExpression(expression.callee) ||
+        expression.args.some((arg) => sourceExpressionContainsAwaitExpression(arg));
+    case 'array_literal':
+      return expression.elements.some((element) =>
+        sourceExpressionContainsAwaitExpression(element)
+      );
+    case 'object_literal':
+      return expression.properties.some((property) =>
+        (property.computedName
+          ? sourceExpressionContainsAwaitExpression(property.computedName)
+          : false) || sourceExpressionContainsAwaitExpression(property.value)
+      );
+    case 'arrow_function':
+      return false;
+    case 'identifier':
+    case 'literal':
+    case 'unknown_expression':
+      return false;
+    default: {
+      const exhaustiveCheck: never = expression;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function sourceStatementContainsAwaitExpression(statement: SourceStatementIR): boolean {
+  switch (statement.kind) {
+    case 'variable_declaration':
+      return statement.declarations.some((declaration) =>
+        declaration.initializer
+          ? sourceExpressionContainsAwaitExpression(declaration.initializer)
+          : false
+      );
+    case 'expression_statement':
+      return sourceExpressionContainsAwaitExpression(statement.expression);
+    case 'return':
+      return statement.expression
+        ? sourceExpressionContainsAwaitExpression(statement.expression)
+        : false;
+    case 'if':
+      return sourceExpressionContainsAwaitExpression(statement.test) ||
+        statement.consequent.some((child) => sourceStatementContainsAwaitExpression(child)) ||
+        statement.alternate.some((child) => sourceStatementContainsAwaitExpression(child));
+    case 'while':
+      return sourceExpressionContainsAwaitExpression(statement.test) ||
+        statement.body.some((child) => sourceStatementContainsAwaitExpression(child));
+    case 'do_while':
+      return statement.body.some((child) => sourceStatementContainsAwaitExpression(child)) ||
+        sourceExpressionContainsAwaitExpression(statement.test);
+    case 'for':
+      return (statement.initializer
+        ? statement.initializer.kind === 'variable_declaration'
+          ? sourceStatementContainsAwaitExpression(statement.initializer)
+          : sourceExpressionContainsAwaitExpression(statement.initializer)
+        : false) ||
+        (statement.test ? sourceExpressionContainsAwaitExpression(statement.test) : false) ||
+        (statement.incrementor
+          ? sourceExpressionContainsAwaitExpression(statement.incrementor)
+          : false) ||
+        statement.body.some((child) => sourceStatementContainsAwaitExpression(child));
+    case 'for_of':
+      return ('kind' in statement.left && !statement.left.kind.endsWith('_binding')
+        ? sourceExpressionContainsAwaitExpression(statement.left as SourceExpressionIR)
+        : false) ||
+        sourceExpressionContainsAwaitExpression(statement.right) ||
+        statement.body.some((child) => sourceStatementContainsAwaitExpression(child));
+    case 'switch':
+      return sourceExpressionContainsAwaitExpression(statement.expression) ||
+        statement.clauses.some((clause) =>
+          (clause.expression
+            ? sourceExpressionContainsAwaitExpression(clause.expression)
+            : false) ||
+          clause.statements.some((child) => sourceStatementContainsAwaitExpression(child))
+        );
+    case 'throw':
+      return sourceExpressionContainsAwaitExpression(statement.expression);
+    case 'try':
+      return statement.tryBlock.some((child) => sourceStatementContainsAwaitExpression(child)) ||
+        (statement.catchBlock?.some((child) => sourceStatementContainsAwaitExpression(child)) ??
+          false) ||
+        (statement.finallyBlock?.some((child) => sourceStatementContainsAwaitExpression(child)) ??
+          false);
+    case 'block':
+      return statement.statements.some((child) => sourceStatementContainsAwaitExpression(child));
+    case 'break':
+    case 'continue':
+    case 'unknown_statement':
+      return false;
+    default: {
+      const exhaustiveCheck: never = statement;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function awaitedAssignmentValueRepresentation(
+  target: SourceAwaitAssignmentTarget,
+  context: FunctionLoweringContext,
+): CompilerValueType | undefined {
+  switch (target.kind) {
+    case 'identifier': {
+      const targetRepresentation = context.localRepresentations.get(target.name);
+      return targetRepresentation === 'box_ref'
+        ? context.boxedLocals.get(target.name)
+        : targetRepresentation;
+    }
+    case 'array_element': {
+      const array = lowerExpression({
+        kind: 'identifier',
+        name: target.objectName,
+        role: 'read',
+        span: target.index.span,
+      }, context);
+      const arrayLocal = arrayLocalInfoForRead(
+        {
+          kind: 'identifier',
+          name: target.objectName,
+          role: 'read',
+          span: target.index.span,
+        },
+        array,
+        context,
+      );
+      return arrayLocal?.elementRepresentation;
+    }
+    case 'property': {
+      const objectLayout = context.objectLocals.get(target.objectName);
+      return objectLayout?.fields.find((field) => field.name === target.propertyName)
+        ?.representation;
+    }
+    default: {
+      const exhaustiveCheck: never = target;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function lowerAwaitedAssignmentTargetSet(
+  target: SourceAwaitAssignmentTarget,
+  awaitedValue: SemanticExpressionIR,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  switch (target.kind) {
+    case 'identifier': {
+      const targetRepresentation = context.localRepresentations.get(target.name);
+      const boxedValueType = context.boxedLocals.get(target.name);
+      if (targetRepresentation === 'box_ref' && boxedValueType === awaitedValue.representation) {
+        return [{
+          kind: 'box_set',
+          box: localGetExpression(target.name, 'box_ref'),
+          value: awaitedValue,
+          valueType: awaitedValue.representation,
+        }];
+      }
+      if (targetRepresentation === awaitedValue.representation) {
+        return [{ kind: 'local_set', name: target.name, value: awaitedValue }];
+      }
+      return undefined;
+    }
+    case 'array_element': {
+      const sourceObject: Extract<SourceExpressionIR, { kind: 'identifier' }> = {
+        kind: 'identifier',
+        name: target.objectName,
+        role: 'read',
+        span: target.index.span,
+      };
+      const array = lowerExpression(sourceObject, context);
+      const arrayStatements = takePendingStatements(context);
+      const index = lowerExpression(target.index, context);
+      const indexStatements = takePendingStatements(context);
+      const arrayLocal = arrayLocalInfoForRead(sourceObject, array, context);
+      const arraySet = arrayElementSetStatementForExpression(
+        context,
+        array,
+        arrayLocal,
+        index,
+        awaitedValue,
+      );
+      return arraySet ? [...arrayStatements, ...indexStatements, arraySet] : undefined;
+    }
+    case 'property': {
+      const sourceObject: Extract<SourceExpressionIR, { kind: 'identifier' }> = {
+        kind: 'identifier',
+        name: target.objectName,
+        role: 'read',
+        span: target.span,
+      };
+      const object = lowerExpression(sourceObject, context);
+      const objectLayout = objectLocalInfoForRead(sourceObject, object, context);
+      if (!objectLayout || objectLayout.family !== 'specialized_object') {
+        return undefined;
+      }
+      const fieldIndex = objectLayout.fields.findIndex((field) =>
+        field.name === target.propertyName
+      );
+      if (fieldIndex < 0) {
+        return undefined;
+      }
+      const field = objectLayout.fields[fieldIndex]!;
+      if (field.representation !== awaitedValue.representation) {
+        return undefined;
+      }
+      const materialized = materializeObjectExpressionForRead(
+        object,
+        objectLayout,
+        context,
+        'async_await_property',
+      );
+      context.runtimeFamilies.add('specialized_object');
+      return [
+        ...materialized.statements,
+        {
+          kind: 'specialized_object_field_set',
+          objectName: materialized.objectName,
+          representationName: objectLayout.representationName,
+          fieldIndex,
+          fieldName: field.name,
+          value: awaitedValue,
+        },
+      ];
+    }
+    default: {
+      const exhaustiveCheck: never = target;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function pushAsyncAwaitRejectedClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  targetCapture: SemanticExpressionIR,
+  options?: SourceAwaitContinuationOptions,
+):
+  | {
+    functionId: number;
+    captureValues: readonly {
+      value: SemanticExpressionIR;
+      valueType: CompilerValueType;
+    }[];
+  }
+  | undefined {
+  if (options?.rejectionCatch) {
+    const captures = sourceAsyncCapturesForLiveNames(
+      context,
+      sourceAsyncLiveNamesForCatchContinuation(options.rejectionCatch),
+    );
+    const functionId = pushPromiseCatchIntoClosure(
+      context,
+      signatureId,
+      options.rejectionCatch,
+      captures,
+      options,
+    );
+    if (functionId === undefined) {
+      return undefined;
+    }
+    return {
+      functionId,
+      captureValues: asyncAwaitContinuationCaptureValues(captures, targetCapture, context),
+    };
+  }
+  const finalizerStatements = options?.rejectionFinalizerStatements ?? [];
+  const captures = finalizerStatements.length > 0
+    ? sourceAsyncCapturesForLiveNames(
+      context,
+      sourceAsyncLiveNamesForStatements(finalizerStatements),
+    )
+    : [];
+  const functionId = finalizerStatements.length > 0
+    ? pushPromiseRejectIntoClosureWithFinally(
+      context,
+      signatureId,
+      finalizerStatements,
+      captures,
+      options?.finallyReturnStatement,
+      options?.finallyThrowStatement,
+    )
+    : pushPromiseRejectIntoClosure(context, signatureId);
+  if (functionId === undefined) {
+    return undefined;
+  }
+  return {
+    functionId,
+    captureValues: asyncAwaitContinuationCaptureValues(captures, targetCapture, context),
+  };
+}
+
+function pushAsyncAwaitFulfilledClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  steps: readonly SourceAwaitStep[],
+  index: number,
+  captures: readonly SourceAsyncCapture[],
+  trailingStatements: readonly SourceStatementIR[],
+  returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+  options?: SourceAwaitContinuationOptions,
+): number | undefined {
+  const step = steps[index];
+  if (!step) {
+    context.unsupportedKinds.add('async_await_step');
+    return undefined;
+  }
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  const closureContext = createAsyncAwaitContinuationContext(
+    context,
+    `closure_source_async_await_fulfilled_${closureFunctionId}`,
+    captures,
+  );
+  const body: SemanticStatementIR[] = [];
+  if (step.binding || step.assignmentTarget) {
+    const representation = step.representation ??
+      (step.assignmentTarget
+        ? awaitedAssignmentValueRepresentation(step.assignmentTarget, closureContext)
+        : undefined);
+    if (!representation || (step.binding && !step.type)) {
+      context.unsupportedKinds.add('async_await_value_type');
+      return undefined;
+    }
+    const awaitedValue = untagUnionExpressionForRepresentation(
+      localGetExpression('promise_value', 'tagged_ref'),
+      representation,
+      closureContext,
+    );
+    if (!awaitedValue) {
+      context.unsupportedKinds.add('async_await_value');
+      return undefined;
+    }
+    if (step.binding) {
+      addLocal(closureContext, step.binding.name, representation);
+      closureContext.localDeclarationKinds.set(step.binding.name, 'const');
+      registerSemanticLocalMetadata(closureContext, step.binding.name, step.type!);
+      body.push({ kind: 'local_set', name: step.binding.name, value: awaitedValue });
+    } else if (step.assignmentTarget) {
+      const assignmentStatements = lowerAwaitedAssignmentTargetSet(
+        step.assignmentTarget,
+        awaitedValue,
+        closureContext,
+      );
+      if (!assignmentStatements) {
+        context.unsupportedKinds.add(`async_await_assignment:${step.assignmentTarget.kind}`);
+        return undefined;
+      }
+      body.push(...assignmentStatements);
+    }
+  }
+  const statementsBeforeNextAwait = index === steps.length - 1
+    ? trailingStatements
+    : steps[index + 1]!.leadingStatements;
+  body.push(
+    ...statementsBeforeNextAwait.flatMap((
+      statement,
+    ) => [...lowerStatement(statement, closureContext)]),
+  );
+  if (index === steps.length - 1) {
+    const finallyReturnStatement = options?.finallyReturnStatement;
+    const finallyThrowStatement = options?.finallyThrowStatement;
+    if (finallyReturnStatement) {
+      const finallyReturnValue = finallyReturnStatement.expression
+        ? lowerExpression(finallyReturnStatement.expression, closureContext)
+        : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+      const taggedFinallyReturn = taggedUnionExpressionForValue(finallyReturnValue, closureContext);
+      if (!taggedFinallyReturn) {
+        context.unsupportedKinds.add('async_await_return_value');
+        return undefined;
+      }
+      body.push(...takePendingStatements(closureContext), {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+          args: [promiseTargetFromCapture(), taggedFinallyReturn],
+          representation: 'tagged_ref',
+        },
+      }, { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } });
+    } else if (finallyThrowStatement) {
+      const finallyThrowValue = lowerExpression(finallyThrowStatement.expression, closureContext);
+      const taggedFinallyThrow = taggedUnionExpressionForValue(finallyThrowValue, closureContext);
+      if (!taggedFinallyThrow) {
+        context.unsupportedKinds.add('async_await_throw_value');
+        return undefined;
+      }
+      body.push(...takePendingStatements(closureContext), {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_REJECT_INTO_HELPER_NAME,
+          args: [promiseTargetFromCapture(), taggedFinallyThrow],
+          representation: 'tagged_ref',
+        },
+      }, { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } });
+    } else {
+      const returnValue = returnStatement.expression
+        ? lowerExpression(returnStatement.expression, closureContext)
+        : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+      const taggedReturnValue = taggedUnionExpressionForValue(returnValue, closureContext);
+      if (!taggedReturnValue) {
+        context.unsupportedKinds.add('async_await_return_value');
+        return undefined;
+      }
+      body.push(...takePendingStatements(closureContext), {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+          args: [promiseTargetFromCapture(), taggedReturnValue],
+          representation: 'tagged_ref',
+        },
+      }, { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } });
+    }
+  } else {
+    const nextStep = steps[index + 1]!;
+    const awaitedSource = lowerExpression(nextStep.source, closureContext);
+    const awaitedSourceStatements = takePendingStatements(closureContext);
+    if (awaitedSource.representation !== 'heap_ref') {
+      context.unsupportedKinds.add('async_await_source');
+      return undefined;
+    }
+    const nextCaptures = sourceAsyncCapturesForLiveNames(
+      closureContext,
+      sourceAsyncLiveNamesAfterAwait(steps, index + 1, trailingStatements, returnStatement),
+    );
+    const nextFulfilledFunctionId = pushAsyncAwaitFulfilledClosure(
+      closureContext,
+      signatureId,
+      steps,
+      index + 1,
+      nextCaptures,
+      trailingStatements,
+      returnStatement,
+      options,
+    );
+    const nextRejectedClosure = pushAsyncAwaitRejectedClosure(
+      closureContext,
+      signatureId,
+      localGetExpression('capture_target_0', 'box_ref'),
+      options,
+    );
+    if (nextFulfilledFunctionId === undefined || !nextRejectedClosure) {
+      context.unsupportedKinds.add('async_await_continuation');
+      return undefined;
+    }
+    const awaitedSourceName = nextTempLocalName(closureContext, 'async_await_source');
+    addLocal(closureContext, awaitedSourceName, 'heap_ref');
+    const captureValues = asyncAwaitContinuationCaptureValues(
+      nextCaptures,
+      localGetExpression('capture_target_0', 'box_ref'),
+      closureContext,
+    );
+    body.push(
+      ...awaitedSourceStatements,
+      { kind: 'local_set', name: awaitedSourceName, value: awaitedSource },
+      {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_THEN_HELPER_NAME,
+          args: [
+            localGetExpression(awaitedSourceName, 'heap_ref'),
+            {
+              kind: 'closure_literal',
+              functionId: nextFulfilledFunctionId,
+              signatureId,
+              captures: captureValues.map((capture) => capture.value),
+              captureValueTypes: captureValues.map((capture) => capture.valueType),
+              representation: 'closure_ref',
+            },
+            {
+              kind: 'closure_literal',
+              functionId: nextRejectedClosure.functionId,
+              signatureId,
+              captures: nextRejectedClosure.captureValues.map((capture) => capture.value),
+              captureValueTypes: nextRejectedClosure.captureValues.map((capture) =>
+                capture.valueType
+              ),
+              representation: 'closure_ref',
+            },
+          ],
+          representation: 'heap_ref',
+        },
+      },
+      { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+    );
+    closureContext.runtimeFamilies.add('closure');
+  }
+
+  const unsupportedBodyKinds = [...closureContext.unsupportedKinds].sort();
+  context.moduleState.generatedFunctions.push({
+    name: closureContext.functionName,
+    exportName: '',
+    params: [
+      { name: 'capture_target_0', representation: 'box_ref' },
+      ...captures.map((capture) => ({
+        name: capture.name,
+        representation: 'box_ref' as const,
+      })),
+      { name: 'promise_value', representation: 'tagged_ref' },
+    ],
+    locals: closureContext.locals,
+    result: 'tagged_ref',
+    body,
+    bodyStatus: unsupportedBodyKinds.length === 0 ? 'emittable' : 'stub',
+    unsupportedBodyKinds,
+    runtimeFamilies: [...new Set([...closureContext.runtimeFamilies])].sort(),
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 1 + captures.length,
+    closureCaptureValueTypes: [
+      'tagged_ref',
+      ...captures.map((capture) => capture.valueType),
+    ],
+  });
+  return closureFunctionId;
+}
+
+function appendSourceAwaitStepFromSequentialStatement(
+  statement: SourceStatementIR,
+  steps: SourceAwaitStep[],
+  pendingLeadingStatements: readonly SourceStatementIR[],
+  context: FunctionLoweringContext,
+): readonly SourceStatementIR[] | undefined {
+  if (statement.kind === 'block' && sourceStatementContainsAwaitExpression(statement)) {
+    let pending = pendingLeadingStatements;
+    for (const child of statement.statements) {
+      const nextPending = appendSourceAwaitStepFromSequentialStatement(
+        child,
+        steps,
+        pending,
+        context,
+      );
+      if (!nextPending) {
+        return undefined;
+      }
+      pending = nextPending;
+    }
+    return pending;
+  }
+  if (statement.kind === 'variable_declaration' && statement.declarations.length === 1) {
+    const [declaration] = statement.declarations;
+    if (
+      declaration &&
+      declaration.binding.kind === 'identifier_binding' &&
+      declaration.initializer?.kind === 'await_expression'
+    ) {
+      const awaitedType = localTypeForBinding(declaration.binding, context);
+      if (!awaitedType) {
+        context.unsupportedKinds.add('async_await_value_type');
+        return undefined;
+      }
+      steps.push({
+        binding: declaration.binding,
+        leadingStatements: pendingLeadingStatements,
+        source: declaration.initializer.expression,
+        type: awaitedType,
+        representation: representationForSemanticType(awaitedType),
+      });
+      return [];
+    }
+  }
+  if (
+    statement.kind === 'expression_statement' &&
+    statement.expression.kind === 'await_expression'
+  ) {
+    steps.push({
+      leadingStatements: pendingLeadingStatements,
+      source: statement.expression.expression,
+    });
+    return [];
+  }
+  if (
+    statement.kind === 'expression_statement' &&
+    statement.expression.kind === 'assignment_expression' &&
+    statement.expression.operator === '=' &&
+    statement.expression.left.kind === 'identifier' &&
+    statement.expression.right.kind === 'await_expression'
+  ) {
+    steps.push({
+      assignmentTarget: { kind: 'identifier', name: statement.expression.left.name },
+      leadingStatements: pendingLeadingStatements,
+      source: statement.expression.right.expression,
+    });
+    return [];
+  }
+  if (
+    statement.kind === 'expression_statement' &&
+    statement.expression.kind === 'assignment_expression' &&
+    statement.expression.operator === '=' &&
+    statement.expression.left.kind === 'element_access' &&
+    statement.expression.left.object.kind === 'identifier' &&
+    statement.expression.left.index &&
+    statement.expression.right.kind === 'await_expression'
+  ) {
+    steps.push({
+      assignmentTarget: {
+        kind: 'array_element',
+        objectName: statement.expression.left.object.name,
+        index: statement.expression.left.index,
+      },
+      leadingStatements: pendingLeadingStatements,
+      source: statement.expression.right.expression,
+    });
+    return [];
+  }
+  if (
+    statement.kind === 'expression_statement' &&
+    statement.expression.kind === 'assignment_expression' &&
+    statement.expression.operator === '=' &&
+    statement.expression.left.kind === 'property_access' &&
+    statement.expression.left.object.kind === 'identifier' &&
+    statement.expression.right.kind === 'await_expression'
+  ) {
+    steps.push({
+      assignmentTarget: {
+        kind: 'property',
+        objectName: statement.expression.left.object.name,
+        propertyName: statement.expression.left.property,
+        span: statement.expression.left.span,
+      },
+      leadingStatements: pendingLeadingStatements,
+      source: statement.expression.right.expression,
+    });
+    return [];
+  }
+  if (sourceStatementContainsAwaitExpression(statement)) {
+    return undefined;
+  }
+  return [...pendingLeadingStatements, statement];
+}
+
+function collectSourceAwaitStepsFromSequentialStatements(
+  statements: readonly SourceStatementIR[],
+  context: FunctionLoweringContext,
+):
+  | { steps: readonly SourceAwaitStep[]; trailingStatements: readonly SourceStatementIR[] }
+  | undefined {
+  const steps: SourceAwaitStep[] = [];
+  let pendingLeadingStatements: readonly SourceStatementIR[] = [];
+  for (const statement of statements) {
+    const nextPending = appendSourceAwaitStepFromSequentialStatement(
+      statement,
+      steps,
+      pendingLeadingStatements,
+      context,
+    );
+    if (!nextPending) {
+      return undefined;
+    }
+    pendingLeadingStatements = nextPending;
+  }
+  return { steps, trailingStatements: pendingLeadingStatements };
+}
+
+function lowerSourceAwaitStepsToPromiseReturn(
+  steps: readonly SourceAwaitStep[],
+  trailingStatements: readonly SourceStatementIR[],
+  returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+  context: FunctionLoweringContext,
+  options?: SourceAwaitContinuationOptions,
+): readonly SemanticStatementIR[] | undefined {
+  if (steps.length === 0) {
+    return undefined;
+  }
+
+  const firstStep = steps[0]!;
+  const leadingStatements = firstStep.leadingStatements.flatMap((statement) => [
+    ...lowerStatement(statement, context),
+  ]);
+  const awaitedSource = lowerExpression(firstStep.source, context);
+  const awaitedSourceStatements = takePendingStatements(context);
+  if (awaitedSource.representation !== 'heap_ref') {
+    context.unsupportedKinds.add('async_await_source');
+    return [{ kind: 'unsupported_statement', sourceKind: 'await_expression' }, { kind: 'trap' }];
+  }
+
+  const taggedValue = promiseReactionTaggedValueType();
+  const closureSignature = createClosureSignature(context.moduleState, [taggedValue], taggedValue);
+  const firstCaptures = sourceAsyncCapturesForLiveNames(
+    context,
+    sourceAsyncLiveNamesAfterAwait(
+      steps,
+      0,
+      trailingStatements,
+      returnStatement,
+    ),
+  );
+  const fulfilledFunctionId = pushAsyncAwaitFulfilledClosure(
+    context,
+    closureSignature.id,
+    steps,
+    0,
+    firstCaptures,
+    trailingStatements,
+    returnStatement,
+    options,
+  );
+  const targetPromiseName = nextTempLocalName(context, 'async_await_target');
+  const targetCapture = promiseTargetCapture(targetPromiseName);
+  const rejectedClosure = pushAsyncAwaitRejectedClosure(
+    context,
+    closureSignature.id,
+    targetCapture,
+    options,
+  );
+  if (fulfilledFunctionId === undefined || !rejectedClosure) {
+    return [{ kind: 'unsupported_statement', sourceKind: 'await_expression' }, { kind: 'trap' }];
+  }
+
+  const awaitedSourceName = nextTempLocalName(context, 'async_await_source');
+  addLocal(context, targetPromiseName, 'heap_ref');
+  addLocal(context, awaitedSourceName, 'heap_ref');
+  context.runtimeFamilies.add('closure');
+  context.runtimeFamilies.add('finite_union');
+  context.runtimeFamilies.add('promise');
+  const captureValues = asyncAwaitContinuationCaptureValues(
+    firstCaptures,
+    targetCapture,
+    context,
+  );
+  return [
+    {
+      kind: 'local_set',
+      name: targetPromiseName,
+      value: {
+        kind: 'call',
+        callee: SOUNDSCRIPT_PROMISE_NEW_PENDING_HELPER_NAME,
+        args: [],
+        representation: 'heap_ref',
+      },
+    },
+    ...leadingStatements,
+    ...awaitedSourceStatements,
+    { kind: 'local_set', name: awaitedSourceName, value: awaitedSource },
+    {
+      kind: 'expression',
+      value: {
+        kind: 'call',
+        callee: SOUNDSCRIPT_PROMISE_THEN_HELPER_NAME,
+        args: [
+          localGetExpression(awaitedSourceName, 'heap_ref'),
+          {
+            kind: 'closure_literal',
+            functionId: fulfilledFunctionId,
+            signatureId: closureSignature.id,
+            captures: captureValues.map((capture) => capture.value),
+            captureValueTypes: captureValues.map((capture) => capture.valueType),
+            representation: 'closure_ref',
+          },
+          {
+            kind: 'closure_literal',
+            functionId: rejectedClosure.functionId,
+            signatureId: closureSignature.id,
+            captures: rejectedClosure.captureValues.map((capture) => capture.value),
+            captureValueTypes: rejectedClosure.captureValues.map((capture) => capture.valueType),
+            representation: 'closure_ref',
+          },
+        ],
+        representation: 'heap_ref',
+      },
+    },
+    { kind: 'return', value: localGetExpression(targetPromiseName, 'heap_ref') },
+    { kind: 'trap' },
+  ];
+}
+
+function lowerAsyncPromiseTargetResolution(
+  afterStatements: readonly SourceStatementIR[],
+  returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  const body = afterStatements.flatMap((statement) => [...lowerStatement(statement, context)]);
+  const returnValue = returnStatement.expression
+    ? lowerExpression(returnStatement.expression, context)
+    : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+  const taggedReturnValue = taggedUnionExpressionForValue(returnValue, context);
+  if (!taggedReturnValue) {
+    context.unsupportedKinds.add('async_await_return_value');
+    return undefined;
+  }
+  return [
+    ...body,
+    ...takePendingStatements(context),
+    {
+      kind: 'expression',
+      value: {
+        kind: 'call',
+        callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+        args: [promiseTargetFromCapture(), taggedReturnValue],
+        representation: 'tagged_ref',
+      },
+    },
+    { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+  ];
+}
+
+function asyncLoopStepCallExpression(
+  loopStepFunctionName: string,
+  loopCaptures: readonly SourceAsyncCapture[],
+): SemanticExpressionIR {
+  return {
+    kind: 'call',
+    callee: loopStepFunctionName,
+    args: [
+      localGetExpression('capture_target_0', 'box_ref'),
+      ...loopCaptures.map((capture) => localGetExpression(capture.name, 'box_ref')),
+      { kind: 'undefined_literal', representation: 'tagged_ref' },
+    ],
+    representation: 'tagged_ref',
+  };
+}
+
+function pushAsyncWhileAfterAwaitClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  captures: readonly SourceAsyncCapture[],
+  loopCaptures: readonly SourceAsyncCapture[],
+  loopStepFunctionName: string,
+  steps: readonly SourceAwaitStep[],
+  index: number,
+  bodyTrailingStatements: readonly SourceStatementIR[],
+  loopStatement: Extract<SourceStatementIR, { kind: 'while' }>,
+  afterStatements: readonly SourceStatementIR[],
+  returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+): number | undefined {
+  const step = steps[index];
+  if (!step) {
+    context.unsupportedKinds.add('async_while_step');
+    return undefined;
+  }
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  const closureContext = createAsyncAwaitContinuationContext(
+    context,
+    `closure_source_async_while_fulfilled_${closureFunctionId}`,
+    captures,
+  );
+  const body: SemanticStatementIR[] = [];
+  if (step.binding || step.assignmentTarget) {
+    const representation = step.representation ??
+      (step.assignmentTarget
+        ? awaitedAssignmentValueRepresentation(step.assignmentTarget, closureContext)
+        : undefined);
+    if (!representation || (step.binding && !step.type)) {
+      context.unsupportedKinds.add('async_while_await_value_type');
+      return undefined;
+    }
+    const awaitedValue = untagUnionExpressionForRepresentation(
+      localGetExpression('promise_value', 'tagged_ref'),
+      representation,
+      closureContext,
+    );
+    if (!awaitedValue) {
+      context.unsupportedKinds.add('async_while_await_value');
+      return undefined;
+    }
+    if (step.binding) {
+      addLocal(closureContext, step.binding.name, representation);
+      closureContext.localDeclarationKinds.set(step.binding.name, 'const');
+      registerSemanticLocalMetadata(closureContext, step.binding.name, step.type!);
+      body.push({ kind: 'local_set', name: step.binding.name, value: awaitedValue });
+    } else if (step.assignmentTarget) {
+      const assignmentStatements = lowerAwaitedAssignmentTargetSet(
+        step.assignmentTarget,
+        awaitedValue,
+        closureContext,
+      );
+      if (!assignmentStatements) {
+        context.unsupportedKinds.add(`async_while_await_assignment:${step.assignmentTarget.kind}`);
+        return undefined;
+      }
+      body.push(...assignmentStatements);
+    }
+  }
+  if (index === steps.length - 1) {
+    body.push(
+      ...bodyTrailingStatements.flatMap((
+        statement,
+      ) => [...lowerStatement(statement, closureContext)]),
+      {
+        kind: 'expression',
+        value: asyncLoopStepCallExpression(loopStepFunctionName, loopCaptures),
+      },
+      { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+    );
+  } else {
+    const nextStep = steps[index + 1]!;
+    body.push(
+      ...nextStep.leadingStatements.flatMap((statement) => [
+        ...lowerStatement(statement, closureContext),
+      ]),
+    );
+    const awaitedSource = lowerExpression(nextStep.source, closureContext);
+    const awaitedSourceStatements = takePendingStatements(closureContext);
+    if (awaitedSource.representation !== 'heap_ref') {
+      context.unsupportedKinds.add('async_while_await_source');
+      return undefined;
+    }
+    const nextCaptures = mergeSourceAsyncCaptures(
+      loopCaptures,
+      sourceAsyncCapturesForLiveNames(
+        closureContext,
+        sourceAsyncLiveNamesAfterAwait(
+          steps,
+          index + 1,
+          [...bodyTrailingStatements, loopStatement, ...afterStatements],
+          returnStatement,
+        ),
+      ),
+    );
+    const fulfilledFunctionId = pushAsyncWhileAfterAwaitClosure(
+      closureContext,
+      signatureId,
+      nextCaptures,
+      loopCaptures,
+      loopStepFunctionName,
+      steps,
+      index + 1,
+      bodyTrailingStatements,
+      loopStatement,
+      afterStatements,
+      returnStatement,
+    );
+    const rejectedFunctionId = pushPromiseRejectIntoClosure(closureContext, signatureId);
+    if (fulfilledFunctionId === undefined) {
+      context.unsupportedKinds.add('async_while_continuation');
+      return undefined;
+    }
+    const awaitedSourceName = nextTempLocalName(closureContext, 'async_while_source');
+    addLocal(closureContext, awaitedSourceName, 'heap_ref');
+    const captureValues = asyncAwaitContinuationCaptureValues(
+      nextCaptures,
+      localGetExpression('capture_target_0', 'box_ref'),
+      closureContext,
+    );
+    body.push(
+      ...awaitedSourceStatements,
+      { kind: 'local_set', name: awaitedSourceName, value: awaitedSource },
+      {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_THEN_HELPER_NAME,
+          args: [
+            localGetExpression(awaitedSourceName, 'heap_ref'),
+            {
+              kind: 'closure_literal',
+              functionId: fulfilledFunctionId,
+              signatureId,
+              captures: captureValues.map((capture) => capture.value),
+              captureValueTypes: captureValues.map((capture) => capture.valueType),
+              representation: 'closure_ref',
+            },
+            {
+              kind: 'closure_literal',
+              functionId: rejectedFunctionId,
+              signatureId,
+              captures: [localGetExpression('capture_target_0', 'box_ref')],
+              captureValueTypes: ['tagged_ref'],
+              representation: 'closure_ref',
+            },
+          ],
+          representation: 'heap_ref',
+        },
+      },
+      { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+    );
+    closureContext.runtimeFamilies.add('closure');
+  }
+
+  const unsupportedBodyKinds = [...closureContext.unsupportedKinds].sort();
+  context.moduleState.generatedFunctions.push({
+    name: closureContext.functionName,
+    exportName: '',
+    params: [
+      { name: 'capture_target_0', representation: 'box_ref' },
+      ...captures.map((capture) => ({
+        name: capture.name,
+        representation: 'box_ref' as const,
+      })),
+      { name: 'promise_value', representation: 'tagged_ref' },
+    ],
+    locals: closureContext.locals,
+    result: 'tagged_ref',
+    body,
+    bodyStatus: unsupportedBodyKinds.length === 0 ? 'emittable' : 'stub',
+    unsupportedBodyKinds,
+    runtimeFamilies: [...new Set([...closureContext.runtimeFamilies])].sort(),
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 1 + captures.length,
+    closureCaptureValueTypes: [
+      'tagged_ref',
+      ...captures.map((capture) => capture.valueType),
+    ],
+  });
+  return closureFunctionId;
+}
+
+function lowerAsyncWhileBodyAwaitSchedule(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  loopCaptures: readonly SourceAsyncCapture[],
+  targetCapture: SemanticExpressionIR,
+  loopStepFunctionName: string,
+  statement: Extract<SourceStatementIR, { kind: 'while' }>,
+  afterStatements: readonly SourceStatementIR[],
+  returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+  returnAfterSchedule: boolean,
+): readonly SemanticStatementIR[] | undefined {
+  const collected = collectSourceAwaitStepsFromSequentialStatements(
+    statement.body,
+    context,
+  );
+  if (!collected || collected.steps.length === 0) {
+    context.unsupportedKinds.add('async_while_body');
+    return undefined;
+  }
+  const [step] = collected.steps;
+  if (!step) {
+    context.unsupportedKinds.add('async_while_step');
+    return undefined;
+  }
+  const leadingStatements = step.leadingStatements.flatMap((leadingStatement) => [
+    ...lowerStatement(leadingStatement, context),
+  ]);
+  const awaitedSource = lowerExpression(step.source, context);
+  const awaitedSourceStatements = takePendingStatements(context);
+  if (awaitedSource.representation !== 'heap_ref') {
+    context.unsupportedKinds.add('async_while_await_source');
+    return undefined;
+  }
+  const afterCaptures = mergeSourceAsyncCaptures(
+    loopCaptures,
+    sourceAsyncCapturesForLiveNames(
+      context,
+      sourceAsyncLiveNamesAfterAwait(
+        collected.steps,
+        0,
+        [...collected.trailingStatements, statement, ...afterStatements],
+        returnStatement,
+      ),
+    ),
+  );
+  const fulfilledFunctionId = pushAsyncWhileAfterAwaitClosure(
+    context,
+    signatureId,
+    afterCaptures,
+    loopCaptures,
+    loopStepFunctionName,
+    collected.steps,
+    0,
+    collected.trailingStatements,
+    statement,
+    afterStatements,
+    returnStatement,
+  );
+  const rejectedFunctionId = pushPromiseRejectIntoClosure(context, signatureId);
+  if (fulfilledFunctionId === undefined) {
+    context.unsupportedKinds.add('async_while_continuation');
+    return undefined;
+  }
+  const awaitedSourceName = nextTempLocalName(context, 'async_while_source');
+  addLocal(context, awaitedSourceName, 'heap_ref');
+  const captureValues = asyncAwaitContinuationCaptureValues(
+    afterCaptures,
+    targetCapture,
+    context,
+  );
+  context.runtimeFamilies.add('closure');
+  return [
+    ...leadingStatements,
+    ...awaitedSourceStatements,
+    { kind: 'local_set', name: awaitedSourceName, value: awaitedSource },
+    {
+      kind: 'expression',
+      value: {
+        kind: 'call',
+        callee: SOUNDSCRIPT_PROMISE_THEN_HELPER_NAME,
+        args: [
+          localGetExpression(awaitedSourceName, 'heap_ref'),
+          {
+            kind: 'closure_literal',
+            functionId: fulfilledFunctionId,
+            signatureId,
+            captures: captureValues.map((capture) => capture.value),
+            captureValueTypes: captureValues.map((capture) => capture.valueType),
+            representation: 'closure_ref',
+          },
+          {
+            kind: 'closure_literal',
+            functionId: rejectedFunctionId,
+            signatureId,
+            captures: [targetCapture],
+            captureValueTypes: ['tagged_ref'],
+            representation: 'closure_ref',
+          },
+        ],
+        representation: 'heap_ref',
+      },
+    },
+    ...(returnAfterSchedule
+      ? [{
+        kind: 'return' as const,
+        value: { kind: 'undefined_literal' as const, representation: 'tagged_ref' as const },
+      }]
+      : []),
+  ];
+}
+
+function pushAsyncWhileStepClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  captures: readonly SourceAsyncCapture[],
+  statement: Extract<SourceStatementIR, { kind: 'while' }>,
+  afterStatements: readonly SourceStatementIR[],
+  returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+): number | undefined {
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  const functionName = `closure_source_async_while_step_${closureFunctionId}`;
+  const closureContext = createAsyncAwaitContinuationContext(context, functionName, captures);
+  const condition = lowerExpression(statement.test, closureContext);
+  const conditionStatements = takePendingStatements(closureContext);
+  if (condition.representation !== 'i32') {
+    context.unsupportedKinds.add('async_while_condition');
+    return undefined;
+  }
+  const scheduleStatements = lowerAsyncWhileBodyAwaitSchedule(
+    closureContext,
+    signatureId,
+    captures,
+    localGetExpression('capture_target_0', 'box_ref'),
+    functionName,
+    statement,
+    afterStatements,
+    returnStatement,
+    true,
+  );
+  if (!scheduleStatements) {
+    context.unsupportedKinds.add('async_while_body');
+    return undefined;
+  }
+  const resolveStatements = lowerAsyncPromiseTargetResolution(
+    afterStatements,
+    returnStatement,
+    closureContext,
+  );
+  if (!resolveStatements) {
+    context.unsupportedKinds.add('async_while_return');
+    return undefined;
+  }
+  const body: SemanticStatementIR[] = [
+    ...conditionStatements,
+    {
+      kind: 'if',
+      condition,
+      thenBody: scheduleStatements,
+      elseBody: resolveStatements,
+    },
+    { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+  ];
+  closureContext.runtimeFamilies.add('closure');
+
+  const unsupportedBodyKinds = [...closureContext.unsupportedKinds].sort();
+  context.moduleState.generatedFunctions.push({
+    name: closureContext.functionName,
+    exportName: '',
+    params: [
+      { name: 'capture_target_0', representation: 'box_ref' },
+      ...captures.map((capture) => ({
+        name: capture.name,
+        representation: 'box_ref' as const,
+      })),
+      { name: 'promise_value', representation: 'tagged_ref' },
+    ],
+    locals: closureContext.locals,
+    result: 'tagged_ref',
+    body,
+    bodyStatus: unsupportedBodyKinds.length === 0 ? 'emittable' : 'stub',
+    unsupportedBodyKinds,
+    runtimeFamilies: [...new Set([...closureContext.runtimeFamilies])].sort(),
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 1 + captures.length,
+    closureCaptureValueTypes: [
+      'tagged_ref',
+      ...captures.map((capture) => capture.valueType),
+    ],
+  });
+  return closureFunctionId;
+}
+
+function lowerSequentialAwaitAsyncFunctionBody(
+  func: SourceFunctionIR,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  if (!func.async || context.currentResultType?.kind !== 'promise' || func.body.length < 2) {
+    return undefined;
+  }
+  const returnStatement = func.body.at(-1);
+  if (returnStatement?.kind !== 'return') {
+    return undefined;
+  }
+  const collected = collectSourceAwaitStepsFromSequentialStatements(
+    func.body.slice(0, -1),
+    context,
+  );
+  if (!collected) {
+    return undefined;
+  }
+  const steps = [...collected.steps];
+  let trailingStatements = collected.trailingStatements;
+  let continuationReturnStatement = returnStatement;
+  if (returnStatement.expression?.kind === 'await_expression') {
+    const awaitedType = context.currentResultType.value;
+    if (!awaitedType) {
+      context.unsupportedKinds.add('async_return_await_value_type');
+      return [{ kind: 'unsupported_statement', sourceKind: 'await_expression' }, { kind: 'trap' }];
+    }
+    const syntheticName = nextTempLocalName(context, 'async_return_await');
+    const syntheticBinding: Extract<SourceBindingIR, { kind: 'identifier_binding' }> = {
+      kind: 'identifier_binding',
+      name: syntheticName,
+      span: returnStatement.expression.span,
+    };
+    steps.push({
+      binding: syntheticBinding,
+      leadingStatements: trailingStatements,
+      source: returnStatement.expression.expression,
+      type: awaitedType,
+      representation: representationForSemanticType(awaitedType),
+    });
+    trailingStatements = [];
+    continuationReturnStatement = {
+      ...returnStatement,
+      expression: {
+        kind: 'identifier',
+        name: syntheticName,
+        role: 'read',
+        span: returnStatement.expression.span,
+      },
+    };
+  }
+  return lowerSourceAwaitStepsToPromiseReturn(
+    steps,
+    trailingStatements,
+    continuationReturnStatement,
+    context,
+  );
+}
+
+function lowerConditionalAwaitBranchBody(
+  statements: readonly SourceStatementIR[],
+  afterStatements: readonly SourceStatementIR[],
+  returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+  context: FunctionLoweringContext,
+): { containsAwait: boolean; body: readonly SemanticStatementIR[] } | undefined {
+  if (!statements.some((statement) => sourceStatementContainsAwaitExpression(statement))) {
+    return {
+      containsAwait: false,
+      body: statements.flatMap((statement) => [...lowerStatement(statement, context)]),
+    };
+  }
+  const collected = collectSourceAwaitStepsFromSequentialStatements(statements, context);
+  if (!collected || collected.steps.length === 0) {
+    return undefined;
+  }
+  const body = lowerSourceAwaitStepsToPromiseReturn(
+    collected.steps,
+    [...collected.trailingStatements, ...afterStatements],
+    returnStatement,
+    context,
+  );
+  return body ? { containsAwait: true, body } : undefined;
+}
+
+function lowerConditionalAwaitAsyncFunctionBody(
+  func: SourceFunctionIR,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  if (!func.async || context.currentResultType?.kind !== 'promise' || func.body.length < 2) {
+    return undefined;
+  }
+  const returnStatement = func.body.at(-1);
+  if (returnStatement?.kind !== 'return') {
+    return undefined;
+  }
+  let leadingStatements: readonly SourceStatementIR[] = [];
+  const candidateStatements = func.body.slice(0, -1);
+  for (const [index, statement] of candidateStatements.entries()) {
+    if (!sourceStatementContainsAwaitExpression(statement)) {
+      leadingStatements = [...leadingStatements, statement];
+      continue;
+    }
+    if (
+      statement.kind !== 'if' ||
+      sourceExpressionContainsAwaitExpression(statement.test)
+    ) {
+      return undefined;
+    }
+    const afterStatements = candidateStatements.slice(index + 1);
+    if (
+      afterStatements.some((afterStatement) =>
+        sourceStatementContainsAwaitExpression(afterStatement)
+      )
+    ) {
+      return undefined;
+    }
+    const loweredLeadingStatements = leadingStatements.flatMap((leadingStatement) => [
+      ...lowerStatement(leadingStatement, context),
+    ]);
+    const condition = lowerExpression(statement.test, context);
+    const conditionStatements = takePendingStatements(context);
+    if (condition.representation !== 'i32') {
+      context.unsupportedKinds.add('if_condition');
+    }
+    const thenBranch = lowerConditionalAwaitBranchBody(
+      statement.consequent,
+      afterStatements,
+      returnStatement,
+      context,
+    );
+    const elseBranch = lowerConditionalAwaitBranchBody(
+      statement.alternate,
+      afterStatements,
+      returnStatement,
+      context,
+    );
+    if (!thenBranch || !elseBranch || (!thenBranch.containsAwait && !elseBranch.containsAwait)) {
+      return undefined;
+    }
+    return [
+      ...loweredLeadingStatements,
+      ...conditionStatements,
+      {
+        kind: 'if',
+        condition,
+        thenBody: thenBranch.body,
+        elseBody: elseBranch.body,
+      },
+      ...afterStatements.flatMap((afterStatement) => [...lowerStatement(afterStatement, context)]),
+      ...lowerStatement(returnStatement, context),
+      { kind: 'trap' },
+    ];
+  }
+  return undefined;
+}
+
+function sourceWhileStatementForAwaitLoop(
+  statement: SourceStatementIR,
+): {
+  entryMode: 'body' | 'condition';
+  leadingStatements: readonly SourceStatementIR[];
+  loopStatement: Extract<SourceStatementIR, { kind: 'while' }>;
+} | undefined {
+  if (statement.kind === 'while') {
+    if (sourceExpressionContainsAwaitExpression(statement.test)) {
+      return undefined;
+    }
+    return { entryMode: 'condition', leadingStatements: [], loopStatement: statement };
+  }
+  if (statement.kind === 'do_while') {
+    if (sourceExpressionContainsAwaitExpression(statement.test)) {
+      return undefined;
+    }
+    return {
+      entryMode: 'body',
+      leadingStatements: [],
+      loopStatement: {
+        kind: 'while',
+        test: statement.test,
+        body: statement.body,
+        span: statement.span,
+      },
+    };
+  }
+  if (statement.kind !== 'for') {
+    return undefined;
+  }
+  if (
+    (statement.initializer
+      ? statement.initializer.kind === 'variable_declaration'
+        ? sourceStatementContainsAwaitExpression(statement.initializer)
+        : sourceExpressionContainsAwaitExpression(statement.initializer)
+      : false) ||
+    (statement.test ? sourceExpressionContainsAwaitExpression(statement.test) : false) ||
+    (statement.incrementor ? sourceExpressionContainsAwaitExpression(statement.incrementor) : false)
+  ) {
+    return undefined;
+  }
+  const leadingStatements: SourceStatementIR[] = [];
+  if (statement.initializer) {
+    leadingStatements.push(
+      statement.initializer.kind === 'variable_declaration' ? statement.initializer : {
+        kind: 'expression_statement',
+        expression: statement.initializer,
+        span: statement.initializer.span,
+      },
+    );
+  }
+  const incrementStatements: SourceStatementIR[] = statement.incrementor
+    ? [{
+      kind: 'expression_statement',
+      expression: statement.incrementor,
+      span: statement.incrementor.span,
+    }]
+    : [];
+  return {
+    entryMode: 'condition',
+    leadingStatements,
+    loopStatement: {
+      kind: 'while',
+      test: statement.test ?? {
+        kind: 'literal',
+        literalKind: 'boolean',
+        text: 'true',
+        span: statement.span,
+      },
+      body: [...statement.body, ...incrementStatements],
+      span: statement.span,
+    },
+  };
+}
+
+function lowerLoopAwaitAsyncFunctionBody(
+  func: SourceFunctionIR,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  if (!func.async || context.currentResultType?.kind !== 'promise' || func.body.length < 2) {
+    return undefined;
+  }
+  const returnStatement = func.body.at(-1);
+  if (returnStatement?.kind !== 'return') {
+    return undefined;
+  }
+  let leadingStatements: readonly SourceStatementIR[] = [];
+  const candidateStatements = func.body.slice(0, -1);
+  for (const [index, statement] of candidateStatements.entries()) {
+    if (!sourceStatementContainsAwaitExpression(statement)) {
+      leadingStatements = [...leadingStatements, statement];
+      continue;
+    }
+    const normalizedLoop = sourceWhileStatementForAwaitLoop(statement);
+    if (!normalizedLoop) {
+      return undefined;
+    }
+    const loopStatement = normalizedLoop.loopStatement;
+    const afterStatements = candidateStatements.slice(index + 1);
+    if (
+      afterStatements.some((afterStatement) =>
+        sourceStatementContainsAwaitExpression(afterStatement)
+      )
+    ) {
+      return undefined;
+    }
+    const loweredLeadingStatements = [
+      ...leadingStatements,
+      ...normalizedLoop.leadingStatements,
+    ].flatMap((leadingStatement) => [
+      ...lowerStatement(leadingStatement, context),
+    ]);
+    const taggedValue = promiseReactionTaggedValueType();
+    const closureSignature = createClosureSignature(
+      context.moduleState,
+      [taggedValue],
+      taggedValue,
+    );
+    const captures = sourceAsyncCapturesForLiveNames(
+      context,
+      sourceAsyncLoopLiveNames(loopStatement, afterStatements, returnStatement),
+    );
+    const loopStepFunctionId = pushAsyncWhileStepClosure(
+      context,
+      closureSignature.id,
+      captures,
+      loopStatement,
+      afterStatements,
+      returnStatement,
+    );
+    if (loopStepFunctionId === undefined) {
+      return [{ kind: 'unsupported_statement', sourceKind: 'while' }, { kind: 'trap' }];
+    }
+    const targetPromiseName = nextTempLocalName(context, 'async_while_target');
+    addLocal(context, targetPromiseName, 'heap_ref');
+    context.runtimeFamilies.add('closure');
+    context.runtimeFamilies.add('finite_union');
+    context.runtimeFamilies.add('promise');
+    const targetCapture = promiseTargetCapture(targetPromiseName);
+    const loopStepFunctionName = `closure_source_async_while_step_${loopStepFunctionId}`;
+    const loopStartStatements = normalizedLoop.entryMode === 'condition'
+      ? [{
+        kind: 'expression' as const,
+        value: {
+          kind: 'call' as const,
+          callee: loopStepFunctionName,
+          args: [
+            ...asyncAwaitContinuationCaptureValues(captures, targetCapture, context).map((
+              capture,
+            ) => capture.value),
+            { kind: 'undefined_literal' as const, representation: 'tagged_ref' as const },
+          ],
+          representation: 'tagged_ref' as const,
+        },
+      }]
+      : lowerAsyncWhileBodyAwaitSchedule(
+        context,
+        closureSignature.id,
+        captures,
+        targetCapture,
+        loopStepFunctionName,
+        loopStatement,
+        afterStatements,
+        returnStatement,
+        false,
+      );
+    if (!loopStartStatements) {
+      return [{ kind: 'unsupported_statement', sourceKind: statement.kind }, { kind: 'trap' }];
+    }
+    return [
+      {
+        kind: 'local_set',
+        name: targetPromiseName,
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_NEW_PENDING_HELPER_NAME,
+          args: [],
+          representation: 'heap_ref',
+        },
+      },
+      ...loweredLeadingStatements,
+      ...loopStartStatements,
+      { kind: 'return', value: localGetExpression(targetPromiseName, 'heap_ref') },
+      { kind: 'trap' },
+    ];
+  }
+  return undefined;
+}
+
+function lowerTryFinallyAwaitAsyncFunctionBody(
+  func: SourceFunctionIR,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  if (!func.async || context.currentResultType?.kind !== 'promise' || func.body.length < 1) {
+    return undefined;
+  }
+  const returnStatement = func.body.at(-1);
+  if (returnStatement?.kind !== 'return') {
+    const candidateStatementsNoReturn = func.body;
+    for (const statement of candidateStatementsNoReturn) {
+      if (!sourceStatementContainsAwaitExpression(statement)) continue;
+      if (statement.kind === 'try' && !statement.catchBlock && statement.finallyBlock) {
+        const tryBlockArr = (statement as { tryBlock: SourceStatementIR[] }).tryBlock;
+        const finallyBlockArr = statement.finallyBlock;
+        const tryLastIdx = tryBlockArr.length - 1;
+        const tryLast = tryLastIdx >= 0 ? tryBlockArr[tryLastIdx] : undefined;
+        const tryReturnStatement = tryLast?.kind === 'return'
+          ? tryLast as SourceStatementIR & { kind: 'return' }
+          : undefined;
+        const finallyLastIdx = finallyBlockArr.length - 1;
+        const finallyLast = finallyLastIdx >= 0 ? finallyBlockArr[finallyLastIdx] : undefined;
+        const finallyReturnStatement = finallyLast?.kind === 'return'
+          ? finallyLast as SourceStatementIR & { kind: 'return' }
+          : undefined;
+        const effectiveReturn = finallyReturnStatement || tryReturnStatement;
+        if (!effectiveReturn) return undefined;
+        const tryLeading = tryReturnStatement
+          ? tryBlockArr.slice(0, tryLastIdx)
+          : tryBlockArr;
+        const finallyLeading = finallyReturnStatement
+          ? finallyBlockArr.slice(0, finallyLastIdx)
+          : finallyBlockArr;
+        if (
+          sourceStatementsContainControlTransfer(tryLeading) ||
+          sourceStatementsContainControlTransfer(finallyLeading)
+        ) {
+          return undefined;
+        }
+        const afterStatements = candidateStatementsNoReturn.slice(1);
+        if (afterStatements.some((a) => sourceStatementContainsAwaitExpression(a))) {
+          return undefined;
+        }
+        const collected = collectSourceAwaitStepsFromSequentialStatements(tryLeading, context);
+        if (!collected || collected.steps.length === 0) return undefined;
+        const [firstStep, ...remainingSteps] = collected.steps;
+        if (!firstStep) return undefined;
+        const steps: SourceAwaitStep[] = [
+          { ...firstStep, leadingStatements: [...firstStep.leadingStatements] },
+          ...remainingSteps,
+        ];
+        return lowerSourceAwaitStepsToPromiseReturn(
+          steps,
+          [...collected.trailingStatements, ...finallyLeading, ...afterStatements],
+          effectiveReturn,
+          context,
+          {
+            rejectionFinalizerStatements: finallyLeading,
+            finallyReturnStatement: finallyReturnStatement ?? undefined,
+          },
+        );
+      }
+    }
+    return undefined;
+  }
+  let leadingStatements: readonly SourceStatementIR[] = [];
+  const candidateStatements = func.body.slice(0, -1);
+  for (const [index, statement] of candidateStatements.entries()) {
+    if (!sourceStatementContainsAwaitExpression(statement)) {
+      leadingStatements = [...leadingStatements, statement];
+      continue;
+    }
+      const finallyBlockRaw = (statement as { finallyBlock?: readonly SourceStatementIR[] }).finallyBlock;
+      const finallyReturnIndex = finallyBlockRaw ? finallyBlockRaw.length - 1 : -1;
+      const finallyReturnCandidate = finallyReturnIndex >= 0 && finallyBlockRaw
+        ? finallyBlockRaw[finallyReturnIndex]
+        : undefined;
+      const finallyReturnStatement = finallyReturnCandidate?.kind === 'return'
+        ? finallyReturnCandidate as Extract<SourceStatementIR, { kind: 'return' }>
+        : undefined;
+      const finallyThrowCandidate = finallyReturnIndex >= 0 && finallyBlockRaw
+        ? finallyBlockRaw[finallyReturnIndex]
+        : undefined;
+      const finallyThrowStatement = !finallyReturnStatement && finallyThrowCandidate?.kind === 'throw'
+        ? finallyThrowCandidate as Extract<SourceStatementIR, { kind: 'throw' }>
+        : undefined;
+      const finallyLeadingStatements = (finallyReturnStatement || finallyThrowStatement) && finallyBlockRaw
+        ? finallyBlockRaw.slice(0, finallyReturnIndex)
+        : finallyBlockRaw ?? [];
+      const finallyHasControlTransfer = (finallyReturnStatement || finallyThrowStatement)
+        ? sourceStatementsContainControlTransfer(finallyLeadingStatements)
+        : sourceStatementsContainControlTransfer(finallyBlockRaw ?? []);
+    if (
+      statement.kind !== 'try' ||
+      statement.catchBlock ||
+      statement.catchBinding ||
+      statement.finallyBlock === undefined ||
+      statement.finallyBlock.some((child) => sourceStatementContainsAwaitExpression(child)) ||
+      sourceStatementsContainControlTransfer(statement.tryBlock) ||
+      finallyHasControlTransfer
+    ) {
+      const tryReturnIndex = statement.tryBlock.length - 1;
+      const tryReturnCandidate = statement.tryBlock[tryReturnIndex];
+      const tryReturnStatement = tryReturnCandidate?.kind === 'return'
+        ? tryReturnCandidate as Extract<SourceStatementIR, { kind: 'return' }>
+        : undefined;
+      const tryLeadingStatements = tryReturnStatement
+        ? statement.tryBlock.slice(0, tryReturnIndex)
+        : statement.tryBlock;
+      const tryHasOnlyTerminalReturn = tryReturnStatement !== undefined &&
+        !sourceStatementsContainControlTransfer(tryLeadingStatements);
+      const failsFastChecks = statement.kind !== 'try' ||
+        statement.catchBlock ||
+        statement.catchBinding ||
+        statement.finallyBlock === undefined ||
+        statement.finallyBlock.some((child) => sourceStatementContainsAwaitExpression(child));
+      if (failsFastChecks || !tryHasOnlyTerminalReturn || finallyHasControlTransfer) {
+        return undefined;
+      }
+      const afterStatementsForTryReturn = candidateStatements.slice(index + 1);
+      if (
+        afterStatementsForTryReturn.some((afterStatement) =>
+          sourceStatementContainsAwaitExpression(afterStatement)
+        )
+      ) {
+        return undefined;
+      }
+      const collectedForTryReturn = collectSourceAwaitStepsFromSequentialStatements(
+        tryLeadingStatements,
+        context,
+      );
+      if (!collectedForTryReturn || collectedForTryReturn.steps.length === 0) {
+        return undefined;
+      }
+      const [firstStepForTryReturn, ...remainingStepsForTryReturn] = collectedForTryReturn.steps;
+      if (!firstStepForTryReturn) {
+        return undefined;
+      }
+      const stepsForTryReturn: SourceAwaitStep[] = [
+        {
+          ...firstStepForTryReturn,
+          leadingStatements: [...leadingStatements, ...firstStepForTryReturn.leadingStatements],
+        },
+        ...remainingStepsForTryReturn,
+      ];
+      return lowerSourceAwaitStepsToPromiseReturn(
+        stepsForTryReturn,
+        [
+          ...collectedForTryReturn.trailingStatements,
+          ...finallyLeadingStatements,
+          ...afterStatementsForTryReturn,
+        ],
+        tryReturnStatement,
+        context,
+        {
+          rejectionFinalizerStatements: finallyLeadingStatements,
+          finallyReturnStatement,
+          finallyThrowStatement,
+        },
+      );
+    }
+    const afterStatements = candidateStatements.slice(index + 1);
+    if (
+      afterStatements.some((afterStatement) =>
+        sourceStatementContainsAwaitExpression(afterStatement)
+      )
+    ) {
+      return undefined;
+    }
+    const collected = collectSourceAwaitStepsFromSequentialStatements(
+      statement.tryBlock,
+      context,
+    );
+    if (!collected || collected.steps.length === 0) {
+      return undefined;
+    }
+    const [firstStep, ...remainingSteps] = collected.steps;
+    if (!firstStep) {
+      return undefined;
+    }
+    const steps: SourceAwaitStep[] = [
+      {
+        ...firstStep,
+        leadingStatements: [...leadingStatements, ...firstStep.leadingStatements],
+      },
+      ...remainingSteps,
+    ];
+    return lowerSourceAwaitStepsToPromiseReturn(
+      steps,
+      [
+        ...collected.trailingStatements,
+        ...finallyLeadingStatements,
+        ...afterStatements,
+      ],
+      returnStatement,
+      context,
+      {
+        rejectionFinalizerStatements: finallyLeadingStatements,
+        finallyReturnStatement,
+        finallyThrowStatement,
+      },
+    );
+  }
+  return undefined;
+}
+
+function catchBlockTerminalReturn(
+  catchBlock: readonly SourceStatementIR[],
+): Extract<SourceStatementIR, { kind: 'return' }> | undefined {
+  const lastIndex = catchBlock.length - 1;
+  if (lastIndex < 0) return undefined;
+  const last = catchBlock[lastIndex];
+  return last?.kind === 'return' ? last as Extract<SourceStatementIR, { kind: 'return' }> : undefined;
+}
+
+function catchBlockTerminalThrow(
+  catchBlock: readonly SourceStatementIR[],
+): Extract<SourceStatementIR, { kind: 'throw' }> | undefined {
+  const lastIndex = catchBlock.length - 1;
+  if (lastIndex < 0) return undefined;
+  const last = catchBlock[lastIndex];
+  return last?.kind === 'throw' ? last as Extract<SourceStatementIR, { kind: 'throw' }> : undefined;
+}
+
+function lowerTryCatchAwaitAsyncFunctionBody(
+  func: SourceFunctionIR,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  if (!func.async || context.currentResultType?.kind !== 'promise' || func.body.length < 2) {
+    return undefined;
+  }
+  const returnStatement = func.body.at(-1);
+  if (returnStatement?.kind !== 'return') {
+    return undefined;
+  }
+  let leadingStatements: readonly SourceStatementIR[] = [];
+  const candidateStatements = func.body.slice(0, -1);
+  for (const [index, statement] of candidateStatements.entries()) {
+    if (!sourceStatementContainsAwaitExpression(statement)) {
+      leadingStatements = [...leadingStatements, statement];
+      continue;
+    }
+    const catchReturnStatement = statement.catchBlock
+      ? catchBlockTerminalReturn(statement.catchBlock)
+      : undefined;
+    const catchThrowStatement = statement.catchBlock
+      ? catchBlockTerminalThrow(statement.catchBlock)
+      : undefined;
+    const catchLeadingStatements = catchReturnStatement
+      ? statement.catchBlock.filter((s) => s !== catchReturnStatement)
+      : catchThrowStatement
+      ? statement.catchBlock.filter((s) => s !== catchThrowStatement)
+      : statement.catchBlock;
+    const catchHasControlTransfer = (catchReturnStatement || catchThrowStatement)
+      ? sourceStatementsContainControlTransfer(catchLeadingStatements)
+      : sourceStatementsContainControlTransfer((statement as any).catchBlock || []);
+    if (
+      statement.kind !== 'try' ||
+      !statement.catchBlock ||
+      statement.catchBlock.some((child) => sourceStatementContainsAwaitExpression(child)) ||
+      sourceStatementsContainControlTransfer(statement.tryBlock) ||
+      catchHasControlTransfer
+    ) {
+      return undefined;
+    }
+    const finallyBlock = (statement as any).finallyBlock as readonly SourceStatementIR[] | undefined;
+    if (finallyBlock && sourceStatementsContainControlTransfer(finallyBlock)) {
+      return undefined;
+    }
+    const afterStatements = candidateStatements.slice(index + 1);
+    if (
+      afterStatements.some((afterStatement) =>
+        sourceStatementContainsAwaitExpression(afterStatement)
+      )
+    ) {
+      return undefined;
+    }
+    const collected = collectSourceAwaitStepsFromSequentialStatements(
+      statement.tryBlock,
+      context,
+    );
+    if (!collected || collected.steps.length === 0) {
+      return undefined;
+    }
+    const [firstStep, ...remainingSteps] = collected.steps;
+    if (!firstStep) {
+      return undefined;
+    }
+    const steps: SourceAwaitStep[] = [
+      {
+        ...firstStep,
+        leadingStatements: [...leadingStatements, ...firstStep.leadingStatements],
+      },
+      ...remainingSteps,
+    ];
+    const trailingStatements = finallyBlock
+      ? [...collected.trailingStatements, ...finallyBlock, ...afterStatements]
+      : [...collected.trailingStatements, ...afterStatements];
+    return lowerSourceAwaitStepsToPromiseReturn(
+      steps,
+      trailingStatements,
+      returnStatement,
+      context,
+      {
+        rejectionCatch: {
+          afterStatements,
+          catchBinding: statement.catchBinding,
+          catchBlock: statement.catchBlock,
+          returnStatement,
+          catchReturnStatement,
+          catchThrowStatement,
+        },
+        finallyBlock,
+      },
+    );
+  }
+  return undefined;
+}
+
+function lowerAwaitAsyncFunctionBody(
+  func: SourceFunctionIR,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  return lowerSequentialAwaitAsyncFunctionBody(func, context) ??
+    lowerConditionalAwaitAsyncFunctionBody(func, context) ??
+    lowerLoopAwaitAsyncFunctionBody(func, context) ??
+    lowerTryFinallyAwaitAsyncFunctionBody(func, context) ??
+    lowerTryCatchAwaitAsyncFunctionBody(func, context);
 }
 
 function findBoundarySurface(
@@ -3702,6 +9871,7 @@ function lowerFunction(
   func: SourceFunctionIR,
   sharedFacts: SharedSemanticFactsIR,
   functionResultArrayLocals: Map<string, SourceSemanticArrayLocal>,
+  functionParamTypes: Map<string, readonly SemanticTypeIR[]>,
   functionResultRepresentations: Map<string, CompilerValueType>,
   functionResultTypes: Map<string, SemanticTypeIR>,
   objectLayoutsByKey: Map<string, SemanticObjectLayoutIR>,
@@ -3749,7 +9919,11 @@ function lowerFunction(
   );
   const context: FunctionLoweringContext = {
     functionName: func.name,
+    sourceFunctionName: func.name,
+    asyncFunction: func.async,
+    currentResultType: signature?.result,
     functionResultArrayLocals,
+    functionParamTypes,
     functionResultRepresentations,
     functionResultTypes,
     localRepresentations,
@@ -3762,15 +9936,20 @@ function lowerFunction(
       params.map((param) => [param.name, 'param' as const]),
     ),
     localTypesByKey,
+    mapLocals: new Map(),
     moduleState,
     objectLayoutsByKey,
     objectLocals: new Map(),
+    setLocals: new Map(),
+    unionLocals: new Map(),
     classesByName,
     pendingStatements: [],
     runtimeFamilies: new Set(),
     stringLiteralIds,
     stringLiterals,
     switchBreakLocalStack: [],
+    throwTargets: [],
+    completionTargets: [],
     tempIndex: 0,
     unsupportedKinds,
   };
@@ -3786,6 +9965,17 @@ function lowerFunction(
       const objectLocal = objectLocalForParameterType(param.type, context);
       if (objectLocal) {
         context.objectLocals.set(loweredParam.name, objectLocal);
+      }
+      if (isFiniteUnionSemanticType(param.type)) {
+        context.unionLocals.set(loweredParam.name, param.type);
+      }
+      const mapLocal = mapLocalInfoForSemanticType(param.type);
+      if (mapLocal) {
+        context.mapLocals.set(loweredParam.name, mapLocal);
+      }
+      const setLocal = setLocalInfoForSemanticType(param.type);
+      if (setLocal) {
+        context.setLocals.set(loweredParam.name, setLocal);
       }
       const closureLocal = closureLocalForSemanticType(param.type, context);
       if (closureLocal) {
@@ -3831,9 +10021,13 @@ function lowerFunction(
     context.unsupportedKinds.add('parameter_binding');
     return [{ kind: 'unsupported_statement', sourceKind: 'parameter_binding' }];
   });
+  const loweredBody = lowerAwaitAsyncFunctionBody(func, context) ?? lowerFunctionBody(
+    func,
+    context,
+  );
   const body = [
     ...parameterBindingStatements,
-    ...lowerFunctionBody(func, context),
+    ...loweredBody,
   ];
   const unsupportedBodyKinds = [...unsupportedKinds].sort();
   const result = signature ? representationForSemanticType(signature.result) : 'tagged_ref';
@@ -3899,10 +10093,12 @@ export function createSemanticModuleFromSourceHIR(
   const functionResultRepresentations = new Map<string, CompilerValueType>();
   const functionResultArrayLocals = new Map<string, SourceSemanticArrayLocal>();
   const functionResultTypes = new Map<string, SemanticTypeIR>();
+  const functionParamTypes = new Map<string, readonly SemanticTypeIR[]>();
   for (const module of source.modules) {
     for (const func of module.functions) {
       const signature = findFunctionSignature(sharedFacts, module, func);
       if (signature) {
+        functionParamTypes.set(func.name, signature.params.map((param) => param.type));
         functionResultTypes.set(func.name, signature.result);
         functionResultRepresentations.set(
           func.name,
@@ -3922,6 +10118,7 @@ export function createSemanticModuleFromSourceHIR(
         func,
         sharedFacts,
         functionResultArrayLocals,
+        functionParamTypes,
         functionResultRepresentations,
         functionResultTypes,
         objectLayoutsByKey,

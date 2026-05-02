@@ -31,6 +31,8 @@ export const SOUND_DIAGNOSTIC_CODES = {
   ambientHostValueRequiresExplicitBoundary: 'SOUND1039',
   invalidEffectAnnotation: 'SOUND1040',
   effectContractViolation: 'SOUND1041',
+  unavailableRuntimeCapability: 'SOUND1042',
+  invalidExternImport: 'SOUND1043',
 } as const;
 
 export type SoundDiagnosticCode =
@@ -60,7 +62,7 @@ export const SOUND_DIAGNOSTIC_MESSAGES = {
   invalidAnnotationTarget: 'soundscript annotation is not valid on this target.',
   annotationArgumentsNotSupported: 'This soundscript annotation does not support arguments in v1.',
   ambientRuntimeDeclarationRequiresExtern:
-    "Ambient runtime declarations in soundscript files require a site-local '// #[extern]' marker.",
+    'Ambient runtime declarations are not supported in soundscript files.',
   exportedAmbientRuntimeDeclaration:
     'Ambient runtime declarations may not be exported from soundscript files.',
   invalidVarianceAnnotation: 'Variance annotation contract is invalid.',
@@ -76,12 +78,15 @@ export const SOUND_DIAGNOSTIC_MESSAGES = {
     'Construction-time dispatch and this escape are not allowed before construction completes.',
   fieldReadBeforeInitialization:
     'Instance fields may not be read before definite initialization in soundscript.',
-  definiteAssignmentAssertion:
-    'Definite-assignment assertions are not supported in soundscript.',
+  definiteAssignmentAssertion: 'Definite-assignment assertions are not supported in soundscript.',
   ambientHostValueRequiresExplicitBoundary:
-    "Ambient host values cannot be used directly in soundscript without an explicit boundary import or same-file '// #[extern]' declaration.",
+    'Ambient host values cannot be used directly in soundscript without an explicit boundary import.',
   invalidEffectAnnotation: 'Effects annotation contract is invalid.',
   effectContractViolation: 'Effect contract violation.',
+  unavailableRuntimeCapability:
+    'This stdlib module is not available for the selected Soundscript runtime target.',
+  invalidExternImport:
+    'Extern imports must use explicit named interop imports backed by ambient declarations.',
 } as const;
 
 export const COMPILER_DIAGNOSTIC_CODES = {

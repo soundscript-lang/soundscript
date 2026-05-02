@@ -46,7 +46,7 @@ function createSoundscriptOnlyTsconfig(): string {
         target: 'ES2022',
         module: 'ESNext',
       },
-      include: ['src/**/*.sts'],
+      include: ['src/**/*.sts', 'src/**/*.d.ts'],
     },
     null,
     2,
@@ -63,7 +63,10 @@ function createBrowserTsconfig(): string {
         target: 'ES2022',
         module: 'ESNext',
       },
-      include: ['src/**/*.sts'],
+      soundscript: {
+        target: 'js-browser',
+      },
+      include: ['src/**/*.sts', 'src/**/*.d.ts'],
     },
     null,
     2,
@@ -1476,7 +1479,7 @@ Deno.test('analyzeProject loads the bundled node extern pack on node-family targ
       '// #[interop]',
       'import { scheduler, setTimeout as waitTimeout } from "node:timers/promises";',
       '// #[interop]',
-      "import { process } from 'host:node';",
+      'import process from "node:process";',
       '',
       'const cwd = process.cwd();',
       'const path = join(cwd, "notes.txt");',
@@ -1523,6 +1526,13 @@ Deno.test('analyzeProject loads the bundled node extern pack on node-family targ
     'TS2307',
     'TS2307',
     'TS2307',
+    'SOUND1042',
+    'SOUND1042',
+    'SOUND1042',
+    'SOUND1042',
+    'SOUND1042',
+    'SOUND1042',
+    'SOUND1042',
   ]);
 });
 Deno.test('analyzeProject tracks bundled deno extern builtins under effect contracts', async () => {
@@ -1583,8 +1593,8 @@ Deno.test('analyzeProject tracks bundled deno extern builtins under effect contr
       '',
     ].join('\n'),
     'src/index.sts': [
-      '// #[extern]',
-      'declare const runtimeDeno: typeof Deno;',
+      '// #[interop]',
+      "import { Deno as runtimeDeno } from 'extern:globalThis';",
       '',
       '// #[effects(forbid: [host])]',
       'function readCurrentDirectory(): string {',
@@ -1714,7 +1724,7 @@ Deno.test('analyzeProject tracks bundled node builtins under effect contracts', 
     ),
     'src/index.sts': [
       '// #[interop]',
-      'import { Buffer as ModuleBuffer } from "node:buffer";',
+      'import { Buffer, Buffer as ModuleBuffer } from "node:buffer";',
       '// #[interop]',
       'import { createHash, createHmac, getRandomValues, randomBytes, randomFill, randomFillSync, randomInt, randomUUID } from "node:crypto";',
       '// #[interop]',
@@ -1728,7 +1738,7 @@ Deno.test('analyzeProject tracks bundled node builtins under effect contracts', 
       '// #[interop]',
       'import { scheduler, setImmediate as waitImmediate, setTimeout as waitTimeout } from "node:timers/promises";',
       '// #[interop]',
-      "import { Buffer, process } from 'host:node';",
+      'import process from "node:process";',
       '',
       '// #[effects(forbid: [host])]',
       'function readCurrentDirectory(): string {',
@@ -2125,7 +2135,7 @@ Deno.test('analyzeProject tracks bundled node builtins under effect contracts', 
   );
 });
 
-Deno.test('analyzeProject exposes portable web globals on wasm-wasi', async () => {
+Deno.test('analyzeProject exposes explicit raw web globals on js-browser', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -2143,7 +2153,7 @@ Deno.test('analyzeProject exposes portable web globals on wasm-wasi', async () =
     ),
     'src/index.sts': [
       '// #[interop]',
-      "import { document, window } from 'host:dom';",
+      "import { document, window } from 'web:dom';",
       '',
       'const title = document.title;',
       'const href = window.location.href;',
@@ -2162,12 +2172,12 @@ Deno.test('analyzeProject exposes portable web globals on wasm-wasi', async () =
   assertEquals(result.diagnostics, []);
 });
 
-Deno.test('analyzeProject rejects host:dom imports when DOM libs are unavailable', async () => {
+Deno.test('analyzeProject rejects web:dom imports when DOM libs are unavailable', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': createSoundscriptOnlyTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      "import { document } from 'host:dom';",
+      "import { document } from 'web:dom';",
       '',
       'void document;',
       '',
@@ -2181,6 +2191,112 @@ Deno.test('analyzeProject rejects host:dom imports when DOM libs are unavailable
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['TS2307']);
+});
+
+Deno.test('analyzeProject rejects legacy host shims with migration guidance', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          lib: ['ES2024', 'DOM'],
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          types: ['node'],
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[interop]',
+      "import { document } from 'host:dom';",
+      '// #[interop]',
+      "import { process } from 'host:node';",
+      '',
+      'void document;',
+      'void process;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-browser',
+    workingDirectory: tempDirectory,
+  });
+
+  const capabilityDiagnostics = result.diagnostics.filter((diagnostic) =>
+    diagnostic.code === 'SOUND1042'
+  );
+  assertEquals(capabilityDiagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'host:dom',
+    'host:node',
+  ]);
+  assertEquals(capabilityDiagnostics.map((diagnostic) => diagnostic.hint), [
+    'Use `web:dom` for raw DOM globals behind `// #[interop]`.',
+    'Use ordinary `node:*` builtin imports behind `// #[interop]`.',
+  ]);
+});
+
+Deno.test('analyzeProject gates raw web and node imports by runtime target', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          lib: ['ES2024', 'DOM'],
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          types: ['node'],
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/web-on-node.sts': [
+      '// #[interop]',
+      "import { document } from 'web:dom';",
+      '',
+      'void document;',
+      '',
+    ].join('\n'),
+    'src/node-on-browser.sts': [
+      '// #[interop]',
+      "import process from 'node:process';",
+      '',
+      'void process;',
+      '',
+    ].join('\n'),
+  });
+
+  const webOnNode = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-node',
+    workingDirectory: tempDirectory,
+  });
+  const nodeOnBrowser = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-browser',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(
+    webOnNode.diagnostics.filter((diagnostic) => diagnostic.code === 'SOUND1042').map((
+      diagnostic,
+    ) => diagnostic.metadata?.primarySymbol),
+    ['web:dom'],
+  );
+  assertEquals(
+    nodeOnBrowser.diagnostics.filter((diagnostic) => diagnostic.code === 'SOUND1042').map((
+      diagnostic,
+    ) => diagnostic.metadata?.primarySymbol),
+    ['node:process'],
+  );
 });
 
 Deno.test(
@@ -2223,7 +2339,7 @@ Deno.test(
   },
 );
 
-Deno.test('analyzeProject resolves explicit host:node imports when compilerOptions.types requests node', async () => {
+Deno.test('analyzeProject resolves explicit node:* imports when compilerOptions.types requests node', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -2241,7 +2357,9 @@ Deno.test('analyzeProject resolves explicit host:node imports when compilerOptio
     ),
     'src/index.sts': [
       '// #[interop]',
-      "import { Buffer, process } from 'host:node';",
+      "import { Buffer } from 'node:buffer';",
+      '// #[interop]',
+      "import process from 'node:process';",
       '',
       'const cwd = process.cwd();',
       "const bytes = Buffer.from('sound');",
@@ -2260,7 +2378,42 @@ Deno.test('analyzeProject resolves explicit host:node imports when compilerOptio
   assertEquals(result.diagnostics, []);
 });
 
-Deno.test('analyzeProject rejects host:node imports when compilerOptions.types omits node', async () => {
+Deno.test('analyzeProject requires interop on raw host type-only imports', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          types: ['node'],
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      "import type { Buffer } from 'node:buffer';",
+      '',
+      'type Bytes = Buffer;',
+      'const size: number = 1;',
+      'void size;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-node',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1005']);
+});
+
+Deno.test('analyzeProject rejects node:* imports when compilerOptions.types omits node', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -2278,7 +2431,7 @@ Deno.test('analyzeProject rejects host:node imports when compilerOptions.types o
     ),
     'src/index.sts': [
       '// #[interop]',
-      "import { process } from 'host:node';",
+      "import process from 'node:process';",
       '',
       'void process;',
       '',
@@ -2294,7 +2447,7 @@ Deno.test('analyzeProject rejects host:node imports when compilerOptions.types o
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['TS2307']);
 });
 
-Deno.test('analyzeProject accepts same-file #[extern] declarations for node and user-supplied Deno globals', async () => {
+Deno.test('analyzeProject accepts extern:globalThis imports backed by ambient declarations', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -2310,24 +2463,33 @@ Deno.test('analyzeProject accepts same-file #[extern] declarations for node and 
       null,
       2,
     ),
-    'src/deno-globals.d.ts': [
+    'src/app-globals.d.ts': [
+      'interface AppConfig {',
+      '  apiBase: string;',
+      '  buildId: string;',
+      '}',
+      '',
+      'declare var __APP_CONFIG__: AppConfig;',
+      'declare const APP_LEXICAL: { readonly id: string };',
       'declare namespace Deno {',
       '  interface Runtime {',
       '    cwd(): string;',
       '  }',
+      '  export function cwd(): string;',
       '}',
       '',
     ].join('\n'),
     'src/index.sts': [
-      '// #[extern]',
-      'declare const runtimeProcess: NodeJS.Process;',
+      '// #[interop]',
+      "import { __APP_CONFIG__ as config, Deno } from 'extern:globalThis';",
+      '// #[interop]',
+      "import { APP_LEXICAL as lexicalConfig } from 'extern:global';",
       '',
-      '// #[extern]',
-      'declare const runtimeDeno: Deno.Runtime;',
-      '',
-      'const cwd = runtimeProcess.cwd();',
-      'const denoCwd = runtimeDeno.cwd();',
-      'void cwd;',
+      'const apiBase: string = config.apiBase;',
+      'const lexicalId: string = lexicalConfig.id;',
+      'const denoCwd = Deno.cwd();',
+      'void apiBase;',
+      'void lexicalId;',
       'void denoCwd;',
       '',
     ].join('\n'),
@@ -2340,6 +2502,150 @@ Deno.test('analyzeProject accepts same-file #[extern] declarations for node and 
   });
 
   assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject rejects extern imports without interop and missing ambient values', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts', 'src/**/*.d.ts'],
+      },
+      null,
+      2,
+    ),
+    'src/app-globals.d.ts': [
+      'declare var __APP_CONFIG__: { apiBase: string };',
+      '',
+    ].join('\n'),
+    'src/index.sts': [
+      "import { __APP_CONFIG__ as config, __MISSING__ as missing } from 'extern:globalThis';",
+      '',
+      'void config;',
+      'void missing;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-browser',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1005',
+    'SOUND1043',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.rule), [
+    'extern_import_requires_interop',
+    'extern_import_missing_ambient',
+  ]);
+});
+
+Deno.test('analyzeProject rejects unsupported extern import and re-export forms', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts', 'src/**/*.d.ts'],
+      },
+      null,
+      2,
+    ),
+    'src/app-globals.d.ts': [
+      'declare var __APP_CONFIG__: { apiBase: string };',
+      '',
+    ].join('\n'),
+    'src/default.sts': [
+      '// #[interop]',
+      "import config from 'extern:globalThis';",
+      'void config;',
+      '',
+    ].join('\n'),
+    'src/namespace.sts': [
+      '// #[interop]',
+      "import * as app from 'extern:globalThis';",
+      'void app;',
+      '',
+    ].join('\n'),
+    'src/reexport.sts': [
+      "export { __APP_CONFIG__ } from 'extern:globalThis';",
+      '',
+    ].join('\n'),
+    'src/string-name-global.sts': [
+      '// #[interop]',
+      'import { "app-config" as config } from \'extern:global\';',
+      'void config;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-browser',
+    workingDirectory: tempDirectory,
+  });
+
+  const externDiagnostics = result.diagnostics.filter((diagnostic) =>
+    diagnostic.code === 'SOUND1043'
+  );
+  assertEquals(externDiagnostics.map((diagnostic) => diagnostic.metadata?.rule), [
+    'extern_import_named_only',
+    'extern_import_named_only',
+    'extern_import_reexport_forbidden',
+    'extern_import_global_identifier_only',
+  ]);
+});
+
+Deno.test('analyzeProject rejects retired #[extern] and same-file ambient runtime declarations', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[extern]',
+      'declare const config: { apiBase: string };',
+      '',
+      'void config;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-browser',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1007',
+    'SOUND1029',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.rule), [
+    'extern_annotation_removed',
+    'ambient_runtime_requires_import_boundary',
+  ]);
 });
 
 Deno.test('analyzeProject resolves portable sts platform modules on wasm-wasi', async () => {
@@ -2360,6 +2666,7 @@ Deno.test('analyzeProject resolves portable sts platform modules on wasm-wasi', 
     'src/index.sts': [
       'import { URL, URLSearchParams } from "sts:url";',
       'import { fetch, Headers, Request } from "sts:fetch";',
+      'import { fromBytes, readAllBytes } from "sts:streams";',
       'import { TextEncoder, TextDecoder } from "sts:text";',
       'import { crypto } from "sts:random";',
       '',
@@ -2370,11 +2677,14 @@ Deno.test('analyzeProject resolves portable sts platform modules on wasm-wasi', 
       'const encoder = new TextEncoder();',
       'const decoder = new TextDecoder();',
       'const bytes = encoder.encode(url.href);',
+      'const stream = fromBytes(bytes);',
+      'const streamBytes = readAllBytes(stream);',
       'const text = decoder.decode(bytes);',
       'const cryptoRef = crypto;',
       '',
       'void params;',
       'void responsePromise;',
+      'void streamBytes;',
       'void cryptoRef;',
       'void text;',
       '',
@@ -2388,6 +2698,192 @@ Deno.test('analyzeProject resolves portable sts platform modules on wasm-wasi', 
   });
 
   assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject rejects removed sts:async imports with migration guidance', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'src/index.sts': [
+      "import { succeed } from 'sts:async';",
+      '',
+      'void succeed;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-node',
+    workingDirectory: tempDirectory,
+  });
+
+  const capabilityDiagnostics = result.diagnostics.filter((diagnostic) =>
+    diagnostic.code === 'SOUND1042'
+  );
+  assertEquals(capabilityDiagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'sts:async',
+  ]);
+  assertEquals(
+    capabilityDiagnostics[0]?.hint,
+    'Use `sts:concurrency/task` for portable task helpers.',
+  );
+});
+
+Deno.test('analyzeProject accepts browser-supported portable stdlib modules', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      "import { Task } from 'sts:concurrency/task';",
+      "import { hasCapability } from 'sts:capabilities';",
+      "import { log } from 'sts:console';",
+      "import { Duration, sleep } from 'sts:time';",
+      "import { join } from 'sts:path';",
+      "import { Bytes } from 'sts:bytes';",
+      '',
+      'const task = Task.map(Task.succeed(1), (value: number) => value + 1);',
+      'const path = join("assets", "app.js");',
+      'const bytes = Bytes.fromString(path);',
+      'const ready = hasCapability("fetch");',
+      'log(path, bytes, ready);',
+      'void sleep(Duration.milliseconds(1));',
+      'void task;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-browser',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject gates js-node-only concurrency runtime modules on js-browser', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      "import { TaskGroup } from 'sts:concurrency/runtime';",
+      '',
+      'void TaskGroup;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-browser',
+    workingDirectory: tempDirectory,
+  });
+
+  const capabilityDiagnostics = result.diagnostics.filter((diagnostic) =>
+    diagnostic.code === 'SOUND1042'
+  );
+  assertEquals(capabilityDiagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'sts:concurrency/runtime',
+  ]);
+});
+
+Deno.test('analyzeProject resolves js-node provider stdlib modules on js-node', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          types: ['node'],
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      "import { readTextFile } from 'sts:fs';",
+      "import { required } from 'sts:env';",
+      "import { args } from 'sts:cli';",
+      "import { info, output, spawn } from 'sts:process';",
+      "import { listen as listenHttp, server } from 'sts:http';",
+      "import { connect, connectTls, listen, listenTls, lookupHost } from 'sts:net';",
+      '',
+      'void readTextFile;',
+      'void required;',
+      'void args;',
+      'void info;',
+      'void output;',
+      'void spawn;',
+      'void server;',
+      'void listenHttp;',
+      'void connect;',
+      'void connectTls;',
+      'void listen;',
+      'void listenTls;',
+      'void lookupHost;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-node',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject resolves web portable stdlib modules on js-browser', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      "import { request } from 'sts:fetch';",
+      "import { readAllBytes } from 'sts:streams';",
+      "import { encodeUtf8 } from 'sts:text';",
+      "import { randomBytes } from 'sts:random';",
+      '',
+      'void request;',
+      'void readAllBytes;',
+      'void encodeUtf8;',
+      'void randomBytes;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-browser',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject gates js-node provider modules on js-browser', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      "import { readText } from 'sts:fs';",
+      '',
+      'void readText;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-browser',
+    workingDirectory: tempDirectory,
+  });
+
+  const capabilityDiagnostics = result.diagnostics.filter((diagnostic) =>
+    diagnostic.code === 'SOUND1042'
+  );
+  assertEquals(capabilityDiagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'sts:fs',
+  ]);
 });
 
 Deno.test('analyzeProject resolves stdlib v2 json and compare modules through the analysis pipeline', async () => {
@@ -2407,7 +2903,7 @@ Deno.test('analyzeProject resolves stdlib v2 json and compare modules through th
     ),
     'src/index.sts': [
       "import { isErr } from 'sts:prelude';",
-      "import { parseJson } from 'sts:json';",
+      "import { parseJson, type JsonValue } from 'sts:json';",
       "import { fromCompare, reverse, thenBy, type Ordering } from 'sts:compare';",
       '',
       'const parsed = parseJson(\'{"name":"ok","rank":1}\');',
@@ -2437,7 +2933,7 @@ Deno.test('analyzeProject resolves stdlib v2 json and compare modules through th
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), []);
 });
 
-Deno.test('analyzeProject resolves stdlib v3 hash decode codec and async modules through the analysis pipeline', async () => {
+Deno.test('analyzeProject resolves stdlib v3 hash decode codec and concurrency modules through the analysis pipeline', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -2454,11 +2950,10 @@ Deno.test('analyzeProject resolves stdlib v3 hash decode codec and async modules
     ),
     'src/index.sts': [
       "import { isErr } from 'sts:prelude';",
-      "import * as async from 'sts:async';",
+      "import { Task } from 'sts:concurrency/task';",
       "import * as codec from 'sts:codec';",
       "import * as decode from 'sts:decode';",
       "import * as hash from 'sts:hash';",
-      "import type { Task } from 'sts:async';",
       "import type { Codec } from 'sts:codec';",
       "import type { Decoder } from 'sts:decode';",
       "import type { HashEq } from 'sts:hash';",
@@ -2497,8 +2992,8 @@ Deno.test('analyzeProject resolves stdlib v3 hash decode codec and async modules
       '}',
       'const encodedText: string = encoded.value;',
       '',
-      'const baseTask = async.fromPromise(async () => "user");',
-      'const derivedTask = async.map(baseTask, (value: string) => value.length + encodedText.length + hashCode);',
+      'const baseTask = Task.fromPromise(async () => "user");',
+      'const derivedTask = Task.map(baseTask, (value: string) => value.length + encodedText.length + hashCode);',
       'const loadedContracts: LoadedContracts | undefined = undefined;',
       'void loadedContracts;',
       'void parsedTags;',
@@ -2558,8 +3053,7 @@ Deno.test('analyzeProject uses sound stdlib typing for JSON.stringify overloads'
       2,
     ),
     'src/index.sts': [
-      '// #[extern]',
-      'declare const maybeUnknown: unknown;',
+      'const maybeUnknown: unknown = { ok: true };',
       'const fromUndefined: undefined = JSON.stringify(undefined);',
       'const fromFunction: undefined = JSON.stringify(() => 1);',
       'const fromObject: string = JSON.stringify({ ok: true }, ["ok"]);',
@@ -2705,8 +3199,11 @@ Deno.test('analyzeProject keeps custom toJSON stringify results conservative', a
     ),
     'src/index.sts': [
       'type CallableWithToJson = (() => number) & { toJSON(key?: string): string };',
-      '// #[extern]',
-      'declare const callableWithToJson: CallableWithToJson;',
+      'const callableWithToJson: CallableWithToJson = Object.assign(() => 1, {',
+      '  toJSON(_key?: string): string {',
+      '    return "ok";',
+      '  },',
+      '});',
       'const conservative: string | undefined = JSON.stringify(callableWithToJson);',
       'const narrowed: undefined = JSON.stringify(callableWithToJson);',
       '',
@@ -2737,10 +3234,8 @@ Deno.test('analyzeProject accepts union-typed JSON.stringify property-list repla
       2,
     ),
     'src/index.sts': [
-      '// #[extern]',
-      'declare const nullableKeys: readonly (string | number)[] | null;',
-      '// #[extern]',
-      'declare const optionalKeys: readonly (string | number)[] | undefined;',
+      'const nullableKeys: readonly (string | number)[] | null = null;',
+      'const optionalKeys: readonly (string | number)[] | undefined = undefined;',
       'const fromNullableKeys: string = JSON.stringify({ ok: true }, nullableKeys);',
       'const fromOptionalKeys: string = JSON.stringify({ ok: true }, optionalKeys);',
       '',
@@ -2873,12 +3368,9 @@ Deno.test('analyzeProject treats readonly arrays and plain objects as definite J
       2,
     ),
     'src/index.sts': [
-      '// #[extern]',
-      'declare const tuple: readonly ["x"];',
-      '// #[extern]',
-      'declare const withOptional: { ok?: true };',
-      '// #[extern]',
-      'declare const withUndefined: { ok: true | undefined };',
+      'const tuple: readonly ["x"] = ["x"];',
+      'const withOptional: { ok?: true } = { ok: true };',
+      'const withUndefined: { ok: true | undefined } = { ok: undefined };',
       'const fromTuple: string = JSON.stringify(tuple);',
       'const fromOptional: string = JSON.stringify(withOptional);',
       'const fromUndefinedValue: string = JSON.stringify(withUndefined);',
@@ -2910,8 +3402,7 @@ Deno.test('analyzeProject does not expose removed bundled helper aliases', async
       2,
     ),
     'src/index.sts': [
-      '// #[extern]',
-      'declare const id: Opaque<string, "UserId">;',
+      'const id: Opaque<string, "UserId"> = "user";',
       'const xs: NonEmptyArray<string> = ["a"];',
       'const states = { open: "open", closed: "closed" } as const;',
       'const state: ValueOf<typeof states> = "open";',
@@ -2952,8 +3443,7 @@ Deno.test('analyzeProject uses sound stdlib typing for Array.isArray narrowing',
       2,
     ),
     'src/index.sts': [
-      '// #[extern]',
-      'declare const value: unknown;',
+      'const value: unknown = ["a"];',
       '',
       'if (Array.isArray(value)) {',
       '  const items: string[] = value;',
@@ -3118,8 +3608,7 @@ Deno.test('analyzeProject normalizes catch bindings and built-in Promise rejecti
       '  return trusted.message;',
       '});',
       '',
-      '// #[extern]',
-      'declare const promiseLike: Promise<number>;',
+      'const promiseLike: Promise<number> = Promise.resolve(1);',
       'promiseLike.then(undefined, (reason) => {',
       '  const trusted: Error = reason;',
       '  return trusted.message;',
@@ -3267,8 +3756,7 @@ Deno.test('analyzeProject keeps Promise.prototype.then fulfillment extraction at
     'src/index.sts': [
       'type OnFulfilled = Parameters<typeof Promise.prototype.then>[0];',
       'type Value = Parameters<NonNullable<OnFulfilled>>[0];',
-      '// #[extern]',
-      'declare const value: Value;',
+      'const value: Value = { message: "boom" };',
       'const trusted: { message: string } = value;',
       'void trusted.message;',
       '',
@@ -3487,34 +3975,40 @@ Deno.test('analyzeProject reports actionable guidance for invalid extern annotat
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1027']);
-  assertEquals(result.diagnostics[0]?.metadata?.rule, 'invalid_annotation_target');
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1007']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'extern_annotation_removed');
   assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, '#[extern]');
-  assertEquals(result.diagnostics[0]?.metadata?.replacementFamily, 'supported_annotation_site');
-  assertEquals(result.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
+  assertEquals(result.diagnostics[0]?.metadata?.replacementFamily, 'extern_import_boundary');
+  assertEquals(result.diagnostics[0]?.metadata?.fixability, 'boundary_annotation');
   assertEquals(
     result.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
     [
       'annotationName:extern',
-      'expectedTarget:local ambient runtime declaration',
-      'actualTarget:variable declaration',
+      'registeredBuiltins:effects, interop, newtype, unsafe, value, variance',
     ],
   );
   assertEquals(
     result.diagnostics[0]?.metadata?.counterexample,
-    'An annotation attached to the wrong syntax node can look like it blesses code even though that site does not support the annotation’s semantics.',
+    'A same-file extern declaration gives the identifier a local declaration while its ambient type source stays implicit.',
   );
   assertEquals(
     result.diagnostics[0]?.metadata?.example,
-    'Move `#[extern]` to a local ambient runtime declaration, or remove it if this code is an ordinary implementation.',
+    [
+      '// #[interop]',
+      "import { __APP_CONFIG__ as config } from 'extern:globalThis';",
+    ].join('\n'),
   );
   assertEquals(result.diagnostics[0]?.notes, [
-    '`#[extern]` must attach to a local ambient runtime declaration, but this annotation is attached to a variable declaration.',
-    'Example: Move `#[extern]` to a local ambient runtime declaration, or remove it if this code is an ordinary implementation.',
+    '`#[extern]` has been removed; use a reserved `extern:*` import or an ordinary `#[interop]` host import instead.',
+    'Registered builtin annotations in v1 are `#[effects(...)]`, `#[interop]`, `#[newtype]`, `#[unsafe]`, `#[value]`, and `#[variance(...)]`.',
+    [
+      'Example: // #[interop]',
+      "import { __APP_CONFIG__ as config } from 'extern:globalThis';",
+    ].join('\n'),
   ]);
   assertEquals(
     result.diagnostics[0]?.hint,
-    'Move the annotation to a supported target, or remove it if this site should stay ordinary checked code.',
+    'Replace same-file `#[extern] declare ...` with `// #[interop]` and an `extern:globalThis` or `extern:global` import.',
   );
 });
 
@@ -3546,9 +4040,9 @@ Deno.test('analyzeProject reports actionable guidance for ambient declarations m
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1029']);
-  assertEquals(result.diagnostics[0]?.metadata?.rule, 'ambient_runtime_requires_extern');
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'ambient_runtime_requires_import_boundary');
   assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'envName');
-  assertEquals(result.diagnostics[0]?.metadata?.replacementFamily, 'site_local_extern_boundary');
+  assertEquals(result.diagnostics[0]?.metadata?.replacementFamily, 'extern_import_boundary');
   assertEquals(result.diagnostics[0]?.metadata?.fixability, 'boundary_annotation');
   assertEquals(
     result.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
@@ -3556,19 +4050,25 @@ Deno.test('analyzeProject reports actionable guidance for ambient declarations m
   );
   assertEquals(
     result.diagnostics[0]?.metadata?.counterexample,
-    'Without `#[extern]`, a declaration-only runtime name looks like ordinary checked soundscript even though there is no local implementation.',
+    'A same-file ambient declaration gives the identifier a local declaration while the host value still comes from outside checked soundscript.',
   );
   assertEquals(
     result.diagnostics[0]?.metadata?.example,
-    'Add `// #[extern]` immediately above the declaration, or replace the declaration with a real implementation.',
+    [
+      '// #[interop]',
+      "import { __APP_CONFIG__ as config } from 'extern:globalThis';",
+    ].join('\n'),
   );
   assertEquals(result.diagnostics[0]?.notes, [
-    'This local ambient runtime declaration introduces `envName` without a site-local extern boundary.',
-    'Example: Add `// #[extern]` immediately above the declaration, or replace the declaration with a real implementation.',
+    'This local ambient runtime declaration introduces `envName` without an explicit import boundary.',
+    [
+      'Example: // #[interop]',
+      "import { __APP_CONFIG__ as config } from 'extern:globalThis';",
+    ].join('\n'),
   ]);
   assertEquals(
     result.diagnostics[0]?.hint,
-    "Use '// #[extern]' only for local runtime-provided declarations, or replace the declaration with a real implementation.",
+    'Move the ambient declaration to `.d.ts` and import the value through `extern:*`, or replace it with a real implementation.',
   );
 });
 
@@ -3588,7 +4088,6 @@ Deno.test('analyzeProject reports actionable guidance for exported ambient runti
       2,
     ),
     'src/index.sts': [
-      '// #[extern]',
       'export declare const envName: string;',
       '',
     ].join('\n'),
@@ -3617,15 +4116,15 @@ Deno.test('analyzeProject reports actionable guidance for exported ambient runti
   );
   assertEquals(
     result.diagnostics[0]?.metadata?.example,
-    "Move the declaration to '.d.ts', keep it local with `// #[extern]`, or replace it with a real implementation.",
+    "Move the declaration to '.d.ts' and expose values through explicit imports, or replace it with a real implementation.",
   );
   assertEquals(result.diagnostics[0]?.notes, [
     'This ambient runtime declaration exports `envName` from a soundscript module even though there is no local implementation.',
-    "Example: Move the declaration to '.d.ts', keep it local with `// #[extern]`, or replace it with a real implementation.",
+    "Example: Move the declaration to '.d.ts' and expose values through explicit imports, or replace it with a real implementation.",
   ]);
   assertEquals(
     result.diagnostics[0]?.hint,
-    "Keep declaration-only runtime names local with '// #[extern]', move exported declaration-only surfaces to '.d.ts', or provide a real implementation.",
+    "Move exported declaration-only surfaces to '.d.ts' or provide a real implementation.",
   );
 });
 
@@ -3645,8 +4144,8 @@ Deno.test('analyzeProject reports actionable guidance for unsupported annotation
       2,
     ),
     'src/index.sts': [
-      '// #[extern(answer: 1)]',
-      'declare const envName: string;',
+      '// #[unsafe(answer: 1)]',
+      'const envName = 1;',
       '',
     ].join('\n'),
   });
@@ -3658,7 +4157,7 @@ Deno.test('analyzeProject reports actionable guidance for unsupported annotation
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1028']);
   assertEquals(result.diagnostics[0]?.metadata?.rule, 'annotation_arguments_not_supported');
-  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, '#[extern]');
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, '#[unsafe]');
   assertEquals(
     result.diagnostics[0]?.metadata?.replacementFamily,
     'supported_annotation_arguments',
@@ -3666,7 +4165,7 @@ Deno.test('analyzeProject reports actionable guidance for unsupported annotation
   assertEquals(result.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
   assertEquals(
     result.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
-    ['annotationName:extern', 'argumentsText:(answer: 1)', 'supportedForm:bare form only'],
+    ['annotationName:unsafe', 'argumentsText:(answer: 1)', 'supportedForm:bare form only'],
   );
   assertEquals(
     result.diagnostics[0]?.metadata?.counterexample,
@@ -3674,11 +4173,11 @@ Deno.test('analyzeProject reports actionable guidance for unsupported annotation
   );
   assertEquals(
     result.diagnostics[0]?.metadata?.example,
-    'Remove the arguments from `#[extern(answer: 1)]`.',
+    'Remove the arguments from `#[unsafe(answer: 1)]`.',
   );
   assertEquals(result.diagnostics[0]?.notes, [
-    '`#[extern]` does not accept arguments in v1; this annotation uses `(answer: 1)`.',
-    'Example: Remove the arguments from `#[extern(answer: 1)]`.',
+    '`#[unsafe]` does not accept arguments in v1; this annotation uses `(answer: 1)`.',
+    'Example: Remove the arguments from `#[unsafe(answer: 1)]`.',
   ]);
   assertEquals(
     result.diagnostics[0]?.hint,
@@ -4822,8 +5321,9 @@ Deno.test(
         '  | { key: string; output: Record<string, string>; type: "noop" }',
         '  | { config: Record<string, string>; key: string; type: "node" };',
         '',
-        '// #[extern]',
-        'declare function readRecord(): Record<string, string> | undefined;',
+        'function readRecord(): Record<string, string> | undefined {',
+        '  return undefined;',
+        '}',
         '',
         'function buildStep(kind: "node" | "noop", key: string): Step {',
         '  if (kind === "noop") {',
@@ -4878,8 +5378,9 @@ Deno.test(
         '  | string',
         '  | { [key: string]: LocalJsonValue };',
         '',
-        '// #[extern]',
-        'declare function readMetadata(): Record<string, LocalJsonValue> | undefined;',
+        'function readMetadata(): Record<string, LocalJsonValue> | undefined {',
+        '  return undefined;',
+        '}',
         '',
         'function buildStep(): Record<string, LocalJsonValue> {',
         '  return {',
@@ -5209,7 +5710,7 @@ Deno.test('analyzeProject reports targeted diagnostics for dotted macro-owned me
   );
 });
 
-Deno.test('analyzeProject preserves unknown annotation namespaces and their nested member annotations', async () => {
+Deno.test('analyzeProject rejects unknown annotation namespaces and preserves nested member annotations', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -5239,7 +5740,8 @@ Deno.test('analyzeProject preserves unknown annotation namespaces and their nest
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics, []);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1007']);
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, '#[eq]');
 });
 
 Deno.test('analyzeProject gives structured guidance for duplicate annotations in one block', async () => {
@@ -5258,9 +5760,9 @@ Deno.test('analyzeProject gives structured guidance for duplicate annotations in
       2,
     ),
     'src/index.sts': [
-      '// #[extern]',
-      '// #[extern]',
-      'declare const envName: string;',
+      '// #[unsafe]',
+      '// #[unsafe]',
+      'const envName = "dev";',
       '',
     ].join('\n'),
   });
@@ -5273,15 +5775,15 @@ Deno.test('analyzeProject gives structured guidance for duplicate annotations in
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1026']);
   assertEquals(
     result.diagnostics[0]?.message,
-    'Duplicate soundscript annotation in the same annotation block. `#[extern]` appears more than once in the same block.',
+    'Duplicate soundscript annotation in the same annotation block. `#[unsafe]` appears more than once in the same block.',
   );
   assertEquals(result.diagnostics[0]?.metadata?.rule, 'duplicate_annotation');
-  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, '#[extern]');
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, '#[unsafe]');
   assertEquals(result.diagnostics[0]?.metadata?.replacementFamily, 'single_annotation_per_block');
   assertEquals(result.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
   assertEquals(
     result.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
-    ['annotationName:extern', 'occurrenceCount:2'],
+    ['annotationName:unsafe', 'occurrenceCount:2'],
   );
   assertEquals(
     result.diagnostics[0]?.metadata?.counterexample,
@@ -5289,11 +5791,11 @@ Deno.test('analyzeProject gives structured guidance for duplicate annotations in
   );
   assertEquals(
     result.diagnostics[0]?.metadata?.example,
-    'Keep one `#[extern]` entry in the block and remove the duplicate.',
+    'Keep one `#[unsafe]` entry in the block and remove the duplicate.',
   );
   assertEquals(result.diagnostics[0]?.notes, [
-    '`#[extern]` appears 2 times in the same attached annotation block.',
-    'Example: Keep one `#[extern]` entry in the block and remove the duplicate.',
+    '`#[unsafe]` appears 2 times in the same attached annotation block.',
+    'Example: Keep one `#[unsafe]` entry in the block and remove the duplicate.',
   ]);
   assertEquals(
     result.diagnostics[0]?.hint,
@@ -5447,13 +5949,8 @@ Deno.test('analyzeProject accepts open dotted effects and forward transforms', a
       2,
     ),
     'src/index.sts': [
-      '// #[extern]',
-      '// #[effects(add: [suspend.await], forward: [{ from: callback, rewrite: [{ from: fails, to: fails.rejects }] }])]',
-      'declare function toPromise<T>(callback: () => T): Promise<T>;',
-      '',
-      '// #[extern]',
-      '// #[effects(add: [], forward: [{ from: callback, handle: [fails] }])]',
-      'declare function resultOfLike<T>(callback: () => T): T | Error;',
+      '// #[interop]',
+      'import { resultOfLike, toPromise } from "./effects";',
       '',
       '// #[effects(forbid: [fails.throws])]',
       'function wrapThrowsAsRejects(): Promise<unknown> {',
@@ -5464,6 +5961,14 @@ Deno.test('analyzeProject accepts open dotted effects and forward transforms', a
       'function captureFailures(text: string): unknown {',
       '  return resultOfLike(() => JSON.parse(text));',
       '}',
+      '',
+    ].join('\n'),
+    'src/effects.d.ts': [
+      '// #[effects(add: [suspend.await], forward: [{ from: callback, rewrite: [{ from: fails, to: fails.rejects }] }])]',
+      'export declare function toPromise<T>(callback: () => T): Promise<T>;',
+      '',
+      '// #[effects(add: [], forward: [{ from: callback, handle: [fails] }])]',
+      'export declare function resultOfLike<T>(callback: () => T): T | Error;',
       '',
     ].join('\n'),
   });
@@ -5480,9 +5985,10 @@ Deno.test('analyzeProject allows bodyful add alongside inferred effects', async 
   const tempDirectory = await createTempProject({
     'tsconfig.json': createSoundscriptOnlyTsconfig(),
     'src/index.sts': [
-      '// #[extern]',
       '// #[effects(add: [host.io, host.node.fs, suspend.await])]',
-      'declare function readRemote(path: string): Promise<string>;',
+      'function readRemote(path: string): Promise<string> {',
+      '  return Promise.resolve(path);',
+      '}',
       '',
       '// #[effects(add: [host.db.query])]',
       'export async function taggedRead(path: string): Promise<string> {',
@@ -5504,9 +6010,10 @@ Deno.test('analyzeProject keeps inferred conflicts under bodyful add contracts',
   const tempDirectory = await createTempProject({
     'tsconfig.json': createSoundscriptOnlyTsconfig(),
     'src/index.sts': [
-      '// #[extern]',
       '// #[effects(add: [host.io, host.node.fs, suspend.await])]',
-      'declare function readRemote(path: string): Promise<string>;',
+      'function readRemote(path: string): Promise<string> {',
+      '  return Promise.resolve(path);',
+      '}',
       '',
       '// #[effects(add: [host.db.query], forbid: [host.io])]',
       'export async function invalidTaggedRead(path: string): Promise<string> {',
@@ -5534,9 +6041,10 @@ Deno.test('analyzeProject keeps source and declaration helper surfaces aligned u
       '  readonly decode: (value: unknown) => T;',
       '}',
       '',
-      '// #[extern]',
       '// #[effects(add: [host.io, host.node.fs, suspend.await])]',
-      'declare function readRemote(path: string): Promise<string>;',
+      'function readRemote(path: string): Promise<string> {',
+      '  return Promise.resolve(path);',
+      '}',
       '',
       'export function parseAndDecode<T>(text: string, decoder: Decoder<T>): T {',
       '  return decoder.decode(JSON.parse(text));',
@@ -5547,8 +6055,7 @@ Deno.test('analyzeProject keeps source and declaration helper surfaces aligned u
       '  return await readRemote(path);',
       '}',
       '',
-      '// #[extern]',
-      'declare const console: typeof globalThis.console;',
+      'const console = globalThis.console;',
       '',
       'export function logValue(value: unknown): void {',
       '  console.log(value);',
@@ -5752,9 +6259,10 @@ Deno.test('analyzeProject rejects deprecated via forwarding syntax', async () =>
       2,
     ),
     'src/index.sts': [
-      '// #[extern]',
       '// #[effects(add: [], via: [callback])]',
-      'declare function wrap<T>(callback: () => T): T;',
+      'function wrap<T>(callback: () => T): T {',
+      '  return callback();',
+      '}',
       '',
     ].join('\n'),
   });
@@ -5882,7 +6390,7 @@ Deno.test('analyzeProject accepts pure Promise continuations under forbid fails 
   assertEquals(result.diagnostics, []);
 });
 
-Deno.test('analyzeProject accepts sts:async task constructors under forbid contracts', async () => {
+Deno.test('analyzeProject accepts sts:concurrency/task task constructors under forbid contracts', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -5898,13 +6406,12 @@ Deno.test('analyzeProject accepts sts:async task constructors under forbid contr
       2,
     ),
     'src/index.sts': [
-      "import * as async from 'sts:async';",
-      "import type { Task } from 'sts:async';",
+      "import { Task } from 'sts:concurrency/task';",
       '',
       '// #[effects(forbid: [fails, suspend, mut, host])]',
       'function build(project: (value: number) => number): Task<number> {',
-      '  const seed = async.fromPromise(async () => 1);',
-      '  return async.map(seed, project);',
+      '  const seed = Task.fromPromise(async () => 1);',
+      '  return Task.map(seed, project);',
       '}',
       '',
       'const plusOne = (value: number): number => value + 1;',
@@ -6000,7 +6507,7 @@ Deno.test('analyzeProject allows fresh local scratch mutation under forbid mut',
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       'class Counter {',
       '  value = 0;',
@@ -6414,36 +6921,22 @@ Deno.test('analyzeProject keeps fresh local mut suppression conservative for ind
 
 Deno.test('analyzeProject tracks host-backed globals and stdlib wrappers under forbid contracts', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
-      '// #[extern]',
-      'declare const fetch: typeof globalThis.fetch;',
-      '// #[extern]',
-      'declare const crypto: typeof globalThis.crypto;',
+      '// #[interop]',
+      'import { window } from "web:dom";',
       '',
       'import { fetch as stdFetch } from "sts:fetch";',
       'import { getRandomValues } from "sts:random";',
       '',
       '// #[effects(forbid: [host, suspend])]',
       'function load() {',
-      '  return fetch("https://example.com");',
+      '  return window.fetch("https://example.com");',
       '}',
       '',
       '// #[effects(forbid: [host])]',
       'function uuid(): string {',
-      '  return crypto.randomUUID();',
+      '  return window.crypto.randomUUID();',
       '}',
       '',
       '// #[effects(forbid: [host, mut])]',
@@ -6483,7 +6976,7 @@ Deno.test('analyzeProject treats deferred host schedulers as host effects withou
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       '// #[effects(forbid: [host])]',
       'function schedule(): void {',
@@ -6532,7 +7025,7 @@ Deno.test('analyzeProject tracks fetch host-object families and stdlib wrappers 
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       'import { Headers as FetchHeaders, Request as FetchRequest, Response as FetchResponse } from "sts:fetch";',
       'import { crypto as randomCrypto } from "sts:random";',
@@ -6623,7 +7116,7 @@ Deno.test('analyzeProject tracks URL and text builtins under effect contracts', 
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       'import { URL as StdURL, URLSearchParams as StdURLSearchParams } from "sts:url";',
       'import { TextEncoder as StdTextEncoder, TextDecoder as StdTextDecoder } from "sts:text";',
@@ -6714,7 +7207,7 @@ Deno.test('analyzeProject tracks abort and cloning builtins under effect contrac
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       '// #[effects(forbid: [host])]',
       'function buildController(): AbortController {',
@@ -6789,7 +7282,7 @@ Deno.test('analyzeProject tracks DOM listener and object URL builtins under effe
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       'let registered = 0;',
       '',
@@ -6861,7 +7354,7 @@ Deno.test('analyzeProject tracks DOM mutation and dispatch builtins under effect
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { document, window } from "host:dom";',
+      'import { document, window } from "web:dom";',
       '',
       '// #[effects(forbid: [fails, suspend, mut, host])]',
       'function buildEvent(): Event {',
@@ -6962,7 +7455,7 @@ Deno.test('analyzeProject tracks browser messaging builtins under effect contrac
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       '// #[effects(forbid: [fails])]',
       'function sendWindowMessage(targetOrigin: string): void {',
@@ -7011,7 +7504,7 @@ Deno.test('analyzeProject tracks worker and socket builtins under effect contrac
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       '// #[effects(forbid: [fails])]',
       'function openWorker(scriptUrl: string): Worker {',
@@ -7116,7 +7609,7 @@ Deno.test('analyzeProject tracks request and file builtins under effect contract
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       '// #[effects(forbid: [fails, suspend, mut, host])]',
       'function buildEmptyFormData(): FormData {',
@@ -7202,8 +7695,7 @@ Deno.test('analyzeProject enforces forbid contracts across recursive call cycles
       2,
     ),
     'src/index.sts': [
-      '// #[extern]',
-      'declare const failure: Error;',
+      'const failure = new Error("boom");',
       '',
       'function left(flag: boolean): void {',
       '  if (!flag) {',
@@ -7267,8 +7759,8 @@ Deno.test('analyzeProject reports unknown effect reason categories in forbid dia
   const tempDirectory = await createTempProject({
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
-      '// #[extern]',
-      'declare function opaqueExtern(): number;',
+      '// #[interop]',
+      'import { opaqueExtern } from "extern:globalThis";',
       '',
       '// #[effects(forbid: [fails])]',
       'function callOpaqueExtern(): number {',
@@ -7279,6 +7771,10 @@ Deno.test('analyzeProject reports unknown effect reason categories in forbid dia
       'function dispatchUnknown(target: EventTarget, event: Event): boolean {',
       '  return target.dispatchEvent(event);',
       '}',
+      '',
+    ].join('\n'),
+    'src/app-globals.d.ts': [
+      'declare function opaqueExtern(): number;',
       '',
     ].join('\n'),
   });
@@ -7320,6 +7816,9 @@ Deno.test('analyzeProject includes forwarded path detail in unknown effect reaso
       2,
     ),
     'src/index.sts': [
+      '// #[interop]',
+      'import { wrap } from "./effects";',
+      '',
       'interface Decoder<T> {',
       '  readonly decode: (value: number) => T;',
       '}',
@@ -7327,10 +7826,6 @@ Deno.test('analyzeProject includes forwarded path detail in unknown effect reaso
       'interface DecoderWithOptionalInner<T> extends Decoder<T> {',
       '  readonly inner?: Decoder<T>;',
       '}',
-      '',
-      '// #[extern]',
-      '// #[effects(forward: [decoder.inner.decode])]',
-      'declare function wrap<T>(decoder: DecoderWithOptionalInner<T>, value: number): T;',
       '',
       '// #[effects(forbid: [fails])]',
       'function use(decoder: Decoder<number>): number {',
@@ -7341,6 +7836,14 @@ Deno.test('analyzeProject includes forwarded path detail in unknown effect reaso
       'function runTop(decoder: Decoder<number>): number {',
       '  return use(decoder);',
       '}',
+    ].join('\n'),
+    'src/effects.d.ts': [
+      '// #[effects(forward: [decoder.inner.decode])]',
+      'export declare function wrap<T>(',
+      '  decoder: { readonly decode: (value: number) => T; readonly inner?: { readonly decode: (value: number) => T } },',
+      '  value: number,',
+      '): T;',
+      '',
     ].join('\n'),
   });
 
@@ -7364,7 +7867,7 @@ Deno.test('analyzeProject tracks browser storage and navigation builtins under e
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       '// #[effects(forbid: [host])]',
       'function readStoredValue(): string | null {',
@@ -7441,7 +7944,7 @@ Deno.test('analyzeProject tracks JSON and console builtins under effect contract
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       'const console = window.console;',
       '',
       '// #[effects(forbid: [fails])]',
@@ -7504,7 +8007,7 @@ Deno.test('analyzeProject tracks result, json, and debug stdlib helpers under ef
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       'const console = window.console;',
       '',
       'import { resultOf, ok } from "sts:result";',
@@ -7709,11 +8212,12 @@ Deno.test('analyzeProject enforces callback forbid contracts against failful arg
       2,
     ),
     'src/index.sts': [
-      '// #[extern]',
-      'declare function runChecked(',
+      'function runChecked(',
       '  // #[effects(forbid: [fails])]',
       '  callback: () => void,',
-      '): void;',
+      '): void {',
+      '  callback();',
+      '}',
       '',
       'function bad(): void {',
       '  throw new Error("boom");',
@@ -7733,7 +8237,7 @@ Deno.test('analyzeProject enforces callback forbid contracts against failful arg
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041']);
   assertEquals(result.diagnostics[0]?.metadata?.rule, 'effect_contract_violation');
-  assertEquals(result.diagnostics[0]?.line, 12);
+  assertEquals(result.diagnostics[0]?.line, 13);
   assertEquals(result.diagnostics[0]?.column, 3);
 });
 
@@ -7760,8 +8264,9 @@ Deno.test('analyzeProject checks callable assignability against callback forbid 
       '  ): void;',
       '}',
       '',
-      '// #[extern]',
-      'declare const needsPure: NeedsPureCallback;',
+      'const needsPure: NeedsPureCallback = (callback) => {',
+      '  callback();',
+      '};',
       '',
       'const general: (callback: () => void) => void = needsPure;',
       'void general;',
@@ -7783,7 +8288,9 @@ Deno.test('analyzeProject reports unknown forwarded effects in callable relation
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
+      '// #[interop]',
+      'import { wrapNumber } from "./effects";',
       '',
       'interface Decoder<T> {',
       '  readonly decode: (value: number) => T;',
@@ -7792,10 +8299,6 @@ Deno.test('analyzeProject reports unknown forwarded effects in callable relation
       'interface DecoderWithOptionalInner<T> extends Decoder<T> {',
       '  readonly inner?: Decoder<T>;',
       '}',
-      '',
-      '// #[extern]',
-      '// #[effects(forward: [decoder.inner.decode])]',
-      'declare function wrapNumber(decoder: DecoderWithOptionalInner<number>, value: number): number;',
       '',
       '// #[effects(forbid: [fails])]',
       'function pureWrap(decoder: DecoderWithOptionalInner<number>, value: number): number {',
@@ -7807,6 +8310,14 @@ Deno.test('analyzeProject reports unknown forwarded effects in callable relation
       'void assigned;',
       '',
     ].join('\n'),
+    'src/effects.d.ts': [
+      '// #[effects(forward: [decoder.inner.decode])]',
+      'export declare function wrapNumber(',
+      '  decoder: { readonly decode: (value: number) => number; readonly inner?: { readonly decode: (value: number) => number } },',
+      '  value: number,',
+      '): number;',
+      '',
+    ].join('\n'),
   });
 
   const result = await analyzeProject({
@@ -7814,12 +8325,16 @@ Deno.test('analyzeProject reports unknown forwarded effects in callable relation
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1019']);
-  assertEquals(result.diagnostics[0]?.metadata?.rule, 'callable_effect_covariance');
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1019',
+    'SOUND1019',
+  ]);
+  const forwardedDiagnostic = result.diagnostics.find((diagnostic) =>
+    diagnostic.metadata?.evidence?.some((entry) => entry.label === 'unknownEffectReasons')
+  );
+  assertEquals(forwardedDiagnostic?.metadata?.rule, 'callable_effect_covariance');
   assertEquals(
-    result.diagnostics[0]?.metadata?.evidence?.find((entry) =>
-      entry.label === 'unknownEffectReasons'
-    )
+    forwardedDiagnostic?.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')
       ?.value,
     'unresolved forwarded callback (decoder.inner.decode; failed at decode)',
   );
@@ -7841,11 +8356,12 @@ Deno.test('analyzeProject reports the same forbidden effect set for direct and r
       2,
     ),
     'src/index.sts': [
-      '// #[extern]',
-      'declare function runChecked(',
+      'function runChecked(',
       '  // #[effects(forbid: [fails])]',
       '  callback: () => void,',
-      '): void;',
+      '): void {',
+      '  callback();',
+      '}',
       '',
       'interface NeedsPureCallback {',
       '  (',
@@ -7854,8 +8370,9 @@ Deno.test('analyzeProject reports the same forbidden effect set for direct and r
       '  ): void;',
       '}',
       '',
-      '// #[extern]',
-      'declare const needsPure: NeedsPureCallback;',
+      'const needsPure: NeedsPureCallback = (callback) => {',
+      '  callback();',
+      '};',
       '',
       'function bad(): void {',
       '  throw new Error("boom");',
@@ -7905,9 +8422,11 @@ Deno.test('analyzeProject keeps unresolved deep forwarded paths conservative acr
       '  readonly inner?: DecoderLeaf<T>;',
       '}',
       '',
-      '// #[extern]',
       '// #[effects(forward: [decoder.inner.leaf.decode])]',
-      'declare function wrap(decoder: DecoderTree<number>, value: number): number;',
+      'function wrap(decoder: DecoderTree<number>, value: number): number {',
+      '  void decoder;',
+      '  return value;',
+      '}',
       '',
       '// #[effects(forbid: [fails], forward: [decoder.inner.leaf.decode])]',
       'function ownWrap(decoder: DecoderTree<number>, value: number): number {',
@@ -7970,7 +8489,7 @@ Deno.test('analyzeProject keeps callable assignment as conservative as direct lo
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       'function fail(value: number): number {',
       '  throw new Error("boom");',
@@ -9206,11 +9725,11 @@ Deno.test('analyzeProject applies macro rewriting in in-memory file overrides be
         join(tempDirectory, 'src/index.sts'),
         [
           '// #[interop]',
-          "import { window } from 'host:dom';",
+          "import { window } from 'web:dom';",
           "import { log } from 'sts:experimental/debug';",
           'const console = window.console;',
-          '// #[extern]',
-          'declare function __sts_log<T>(source: string, value: T): T;',
+          'function __sts_log<T>(_source: string, value: T): T { return value; }',
+          '',
           'const value = log(1);',
           'void value;',
           '',
@@ -9303,11 +9822,11 @@ Deno.test('analyzeProject preserves ordinary TypeScript diagnostic lines after m
         join(tempDirectory, 'src/index.sts'),
         [
           '// #[interop]',
-          "import { window } from 'host:dom';",
+          "import { window } from 'web:dom';",
           "import { log } from 'sts:experimental/debug';",
           'const console = window.console;',
-          '// #[extern]',
-          'declare function __sts_log<T>(source: string, value: T): T;',
+          'function __sts_log<T>(_source: string, value: T): T { return value; }',
+          '',
           'const value = log(1);',
           'const count: number = "oops";',
           '',
@@ -9325,11 +9844,11 @@ Deno.test('analyzeProject expands import-scoped builtin macros before TypeScript
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      "import { window } from 'host:dom';",
+      "import { window } from 'web:dom';",
       "import { log } from 'sts:experimental/debug';",
       'const console = window.console;',
-      '// #[extern]',
-      'declare function __sts_log<T>(source: string, value: T): T;',
+      'function __sts_log<T>(_source: string, value: T): T { return value; }',
+      '',
       'const value: string = log(123);',
       '',
     ].join('\n'),
@@ -9759,11 +10278,17 @@ Deno.test(
     );
 
     const directCodes = directResult.diagnostics.map((diagnostic) => diagnostic.code);
-    assertEquals(directCodes, ['TS2305']);
+    assertEquals(directCodes, ['SOUND1007', 'TS2305']);
     assertEquals(wholePreparedResult.diagnostics.map((diagnostic) => diagnostic.code), directCodes);
-    assertEquals(sortedFileScopedDiagnostics.map((diagnostic) => diagnostic.code), ['TS2305']);
+    assertEquals(sortedFileScopedDiagnostics.map((diagnostic) => diagnostic.code), [
+      'SOUND1007',
+      'TS2305',
+    ]);
+    const missingExportDiagnostic = sortedFileScopedDiagnostics.find((diagnostic) =>
+      diagnostic.code === 'TS2305'
+    );
     assertStringIncludes(
-      sortedFileScopedDiagnostics[0]?.filePath ?? '',
+      missingExportDiagnostic?.filePath ?? '',
       '/node_modules/sound-pkg/src/index.sts',
     );
   },
@@ -9951,8 +10476,9 @@ Deno.test('analyzeProject expands sts:prelude Try macros before TypeScript diagn
     ),
     'src/index.sts': [
       "import { type Result, ok, Try } from 'sts:prelude';",
-      '// #[extern]',
-      'declare function fetchValue(): Result<number, string>;',
+      'function fetchValue(): Result<number, string> {',
+      '  return ok(1);',
+      '}',
       '',
       'function compute(): Result<string, string> {',
       '  const value: string = Try(fetchValue());',
@@ -10035,8 +10561,9 @@ Deno.test('analyzeProject accepts Try in unannotated functions with inferred Res
     'src/index.sts': [
       "import { Try, err, ok, type Result } from 'sts:prelude';",
       '',
-      '// #[extern]',
-      'declare function fetchValue(): Result<number, string>;',
+      'function fetchValue(): Result<number, string> {',
+      '  return ok(1);',
+      '}',
       '',
       'function compute() {',
       '  const value = Try(fetchValue());',
@@ -10080,8 +10607,9 @@ Deno.test('analyzeProject accepts Try in unannotated functions whose error flow 
     'src/index.sts': [
       "import { Try, ok, type Result } from 'sts:prelude';",
       '',
-      '// #[extern]',
-      'declare function fetchValue(): Result<number, string>;',
+      'function fetchValue(): Result<number, string> {',
+      '  return ok(1);',
+      '}',
       '',
       'function compute() {',
       '  const value = Try(fetchValue());',
@@ -10118,8 +10646,7 @@ Deno.test('analyzeProject reports actionable guidance for SOUND1020 invalidation
       2,
     ),
     'src/index.sts': [
-      '// #[extern]',
-      'declare function mutate(box: { value: string | null }): void;',
+      'function mutate(box: { value: string | null }): void { box.value = null; }',
       '',
       'function use(box: { value: string | null }) {',
       '  if (box.value !== null) {',
@@ -10168,15 +10695,15 @@ Deno.test('analyzeProject reports actionable guidance for SOUND1020 invalidation
     result.diagnostics[0]?.metadata?.example,
     'Capture before the call when stable: `const capturedValue = box.value; mutate(box); use(capturedValue);`, or re-check after the call.',
   );
-  assertEquals(result.diagnostics[0]?.line, 6);
+  assertEquals(result.diagnostics[0]?.line, 5);
   assertEquals(result.diagnostics[0]?.column, 5);
   assertEquals(result.diagnostics[0]?.relatedInformation, [
     {
       message: 'Earlier narrowing established here.',
       filePath: join(tempDirectory, 'src/index.sts'),
-      line: 5,
+      line: 4,
       column: 7,
-      endLine: 5,
+      endLine: 4,
       endColumn: 25,
     },
   ]);
@@ -10238,9 +10765,8 @@ Deno.test('analyzeProject preserves narrowing across declaration-only calls prov
       2,
     ),
     'src/index.sts': [
-      '// #[extern]',
       '// #[effects(add: [])]',
-      'declare function observe(box: { value: string | null }): void;',
+      'function observe(box: { value: string | null }): void { void box.value; }',
       '',
       'function use(box: { value: string | null }): string {',
       '  if (box.value !== null) {',
@@ -10322,7 +10848,7 @@ Deno.test('analyzeProject preserves narrowing across shared collection callback 
   assertEquals(result.diagnostics, []);
 });
 
-Deno.test('analyzeProject preserves narrowing across sts:async task constructor helpers', async () => {
+Deno.test('analyzeProject preserves narrowing across sts:concurrency/task task constructor helpers', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -10338,12 +10864,11 @@ Deno.test('analyzeProject preserves narrowing across sts:async task constructor 
       2,
     ),
     'src/index.sts': [
-      "import * as async from 'sts:async';",
-      "import type { Task } from 'sts:async';",
+      "import { Task } from 'sts:concurrency/task';",
       '',
       'function use(box: { value: string | null }, task: Task<number>): string {',
       '  if (box.value !== null) {',
-      '    const mapped = async.map(task, (value: number) => value + 1);',
+      '    const mapped = Task.map(task, (value: number) => value + 1);',
       '    void mapped;',
       '    const value: string = box.value;',
       '    return value;',
@@ -10724,7 +11249,7 @@ Deno.test('analyzeProject keeps local forwarding inference conservative for unst
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       'const queueMicrotask = window.queueMicrotask;',
       '',
       'interface Decoder<T> {',
@@ -10812,7 +11337,7 @@ Deno.test('analyzeProject keeps unsupported local forwarding adapters conservati
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       'function fail(value: number): number {',
       '  void value;',
@@ -10934,7 +11459,7 @@ Deno.test('analyzeProject preserves narrowing across deferred host schedulers', 
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       'function use(box: { value: string | null }): string {',
       '  if (box.value !== null) {',
@@ -11661,8 +12186,7 @@ Deno.test('analyzeProject reports actionable guidance for non-null assertions', 
       2,
     ),
     'src/index.sts': [
-      '// #[extern]',
-      'declare const maybe: string | undefined;',
+      'const maybe: string | undefined = undefined;',
       'const value = maybe!;',
       '',
     ].join('\n'),

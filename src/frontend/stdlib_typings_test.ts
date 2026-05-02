@@ -9,7 +9,7 @@ Deno.test('checked-in stdlib declarations expose callable macro and DSL surfaces
     [fileName]: [
       "import { ok, Try } from 'sts:prelude';",
       "import { Match, where } from 'sts:match';",
-      "import * as async from 'sts:async';",
+      "import { Task } from 'sts:concurrency/task';",
       "import * as codec from 'sts:codec';",
       "import * as compare from 'sts:compare';",
       "import * as decode from 'sts:decode';",
@@ -59,7 +59,7 @@ Deno.test('checked-in stdlib declarations expose callable macro and DSL surfaces
       'const fallbackValueFromFn = result.unwrapOrElse(result.err("boom"), (error: string) => error.length);',
       'const thrownValue = result.unwrapOrThrow(result.ok(1));',
       'const thrownSomeValue = result.unwrapOrThrow(result.some(1));',
-      'const task = async.map(async.succeed(1), (value: number) => value + 1);',
+      'const task = Task.map(Task.succeed(1), (value: number) => value + 1);',
       'const hashCode: number = UserHash.hash({ id: "user-1" });',
       'const encodedText: string = encoded.tag === "ok" ? encoded.value : "nope";',
       'void matched;',

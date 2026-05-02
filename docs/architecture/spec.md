@@ -437,8 +437,8 @@ environment. Packages without usable source metadata are foreign dependencies an
 
 The standard library should prefer Web-standard platform APIs wherever the semantics are honest.
 Portable globals and leaf modules are both part of the intended contract. The repo already ships
-`sts:url`, `sts:fetch`, `sts:text`, and `sts:random`; `sts:streams` remains part of the intended
-broader platform surface:
+`sts:url`, `sts:fetch`, `sts:streams`, `sts:text`, and `sts:random` as the initial broader platform
+surface:
 
 - globals and leaf modules:
   - `URL`, `URLSearchParams` and `sts:url`
@@ -481,10 +481,11 @@ The canonical end-state annotation surface is **site-local only**:
 - `// #[interop]` attached to the immediately following import boundary
 
 Current compiler-visible annotations use this same comment-attached `// #[...]` form rather than
-decorator-like spellings. The implemented builtin surface includes `// #[extern]`, `// #[interop]`,
-`// #[unsafe]`, `// #[variance(...)]`, `// #[newtype]`, and `// #[value]`. Future additions such as
-`// #[effects(...)]`, `// #[noescape]`, and `// #[inline]` should extend that same surface instead
-of inventing a second annotation syntax.
+decorator-like spellings. The implemented builtin surface includes `// #[interop]`, `// #[unsafe]`,
+`// #[effects(...)]`, `// #[variance(...)]`, `// #[newtype]`, and `// #[value]`. Future additions
+such as `// #[noescape]` and `// #[inline]` should extend that same surface instead of inventing a
+second annotation syntax. `#[extern]` has been removed in favor of explicit `extern:*` imports
+behind `// #[interop]`.
 
 Annotation blocks are not region-scoped. They stay attached to the immediate next supported node
 because broader regions are harder to audit and make it easier for unrelated proof overrides to
@@ -1014,8 +1015,8 @@ Implemented:
   PromiseLike/thenable bans, receiver-sensitive callable extraction/rebinding bans,
   construction-time dispatch and `this` escape bans, field read-before-initialization bans, and the
   main callable-mutation paths that would treat functions as ordinary extensible objects
-- current annotation support includes `#[extern]`, `#[interop]`, `#[unsafe]`, `#[variance(...)]`,
-  `#[newtype]`, and `#[value]`
+- current annotation support includes `#[interop]`, `#[unsafe]`, `#[effects(...)]`,
+  `#[variance(...)]`, `#[newtype]`, and `#[value]`
 - class nominality in soundscript is implemented, `#[newtype]` carries nominal identity through
   projected declarations and relation checks, and `#[value]` is implemented as a restricted class
   form with dedicated checker rules plus JS emit/runtime support
@@ -1031,8 +1032,9 @@ Implemented:
 - the builtin/runtime module surface under `sts:*` is implemented, with the stable v1 core centered
   on `sts:prelude`, `sts:result`, `sts:match`, `sts:failures`, `sts:url`, `sts:fetch`, `sts:text`,
   `sts:random`, `sts:json`, `sts:compare`, `sts:hash`, `sts:decode`, `sts:encode`, `sts:codec`,
-  `sts:derive`, `sts:async`, `sts:hkt`, `sts:typeclasses`, and `sts:macros`, plus implemented
-  experimental builtin modules such as `sts:numerics`, `sts:value`, and `sts:experimental/*`
+  `sts:derive`, `sts:concurrency/task`, `sts:capabilities`, `sts:time`, `sts:console`, `sts:path`,
+  `sts:bytes`, `sts:hkt`, `sts:typeclasses`, and `sts:macros`, plus implemented experimental builtin
+  modules such as `sts:numerics`, `sts:value`, and `sts:experimental/*`
 - the macro system is implemented as a real compile-time surface with declaration, rewrite,
   control-flow, branch, and fragment macro support, restricted worker-backed macro evaluation,
   target/runtime semantics hooks, and editor hooks for hover, semantic tokens, formatting, bindings,

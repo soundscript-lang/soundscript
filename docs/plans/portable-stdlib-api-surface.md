@@ -319,39 +319,41 @@ import type { Result } from 'sts:result';
 
 export type Task<T, E = Failure> = () => AsyncResult<T, E>;
 
-export namespace Task {
-  export type AllResult<T> = {
-    readonly [K in keyof T]: T[K] extends Task<infer V, unknown> ? V : never;
-  };
+export type TaskAllResult<T> = {
+  readonly [K in keyof T]: T[K] extends Task<infer V, unknown> ? V : never;
+};
 
-  export function succeed<T>(value: T): Task<T, never>;
-  export function fail<E>(error: E): Task<never, E>;
-  export function fromResult<T, E>(result: Result<T, E>): Task<T, E>;
-  export function fromAsyncResult<T, E>(work: () => AsyncResult<T, E>): Task<T, E>;
-  export function fromPromise<T>(
+export interface TaskModule {
+  succeed<T>(value: T): Task<T, never>;
+  fail<E>(error: E): Task<never, E>;
+  fromResult<T, E>(result: Result<T, E>): Task<T, E>;
+  fromAsyncResult<T, E>(work: () => AsyncResult<T, E>): Task<T, E>;
+  fromPromise<T>(
     body: () => Promise<T>,
     mapFailure?: (error: unknown) => Failure,
   ): Task<T, Failure>;
 
-  export function map<A, B, E>(task: Task<A, E>, fn: (value: A) => B): Task<B, E>;
-  export function flatMap<A, B, E1, E2>(
+  map<A, B, E>(task: Task<A, E>, fn: (value: A) => B): Task<B, E>;
+  flatMap<A, B, E1, E2>(
     task: Task<A, E1>,
     fn: (value: A) => Task<B, E2>,
   ): Task<B, E1 | E2>;
-  export function recover<A, B, E>(
+  recover<A, B, E>(
     task: Task<A, E>,
     fn: (error: E) => B | AsyncResult<B, Failure>,
   ): Task<A | B, Failure>;
 
-  export function all<T extends Record<string, Task<unknown, E>>, E>(
+  all<T extends Record<string, Task<unknown, E>>, E>(
     tasks: T,
-  ): Task<AllResult<T>, E>;
-  export function race<T, E>(tasks: readonly [Task<T, E>, ...Task<T, E>[]]): Task<T, E>;
-  export function timeout<T, E>(
+  ): Task<TaskAllResult<T>, E>;
+  race<T, E>(tasks: readonly [Task<T, E>, ...Task<T, E>[]]): Task<T, E>;
+  timeout<T, E>(
     task: Task<T, E>,
     duration: Duration,
   ): Task<T, E | TimeoutFailure>;
 }
+
+export const Task: TaskModule;
 ```
 
 Migration note: remove the current top-level `sts:async.parallel(...)` helper before this surface
@@ -386,6 +388,12 @@ export class TaskHandle<T, E = Failure> {
   cancel(reason?: Failure): void;
 }
 
+export interface ThreadPoolOptions {
+  readonly workers: number | 'available';
+  readonly name?: string;
+  readonly queueLimit?: number;
+}
+
 export class ThreadPool implements AsyncDisposable {
   static get default(): ThreadPool;
   static fixed(options: ThreadPoolOptions): ThreadPool;
@@ -412,19 +420,22 @@ export class Thread<I, O, E = Failure> {
   static blockOn<T, E = Failure>(work: () => AsyncResult<T, E>): Result<T, E>;
 }
 
-export namespace AsyncContext {
-  export class Variable<T> {
-    constructor(options?: { name?: string; defaultValue?: T });
-    get(): T | undefined;
-    run<R>(value: T, body: () => R): R;
-  }
-
-  export class Snapshot {
-    constructor();
-    run<R>(body: () => R): R;
-    static wrap<F extends (...args: unknown[]) => unknown>(fn: F): F;
-  }
+export class AsyncContextVariable<T> {
+  constructor(options?: { name?: string; defaultValue?: T });
+  get(): T | undefined;
+  run<R>(value: T, body: () => R): R;
 }
+
+export class AsyncContextSnapshot {
+  constructor();
+  run<R>(body: () => R): R;
+  static wrap<F extends (...args: unknown[]) => unknown>(fn: F): F;
+}
+
+export const AsyncContext: {
+  readonly Variable: typeof AsyncContextVariable;
+  readonly Snapshot: typeof AsyncContextSnapshot;
+};
 
 export type Send<T> = T;
 export type Share<T> = T;
@@ -443,6 +454,12 @@ export type Send<T> = T;
 export type Share<T> = T;
 
 export type ThreadEntry<I, O, E = Failure> = (input: I) => Result<O, E> | AsyncResult<O, E>;
+
+export interface ThreadPoolOptions {
+  readonly workers: number | 'available';
+  readonly name?: string;
+  readonly queueLimit?: number;
+}
 
 export class ThreadPool implements AsyncDisposable {
   static get default(): ThreadPool;
@@ -1032,17 +1049,32 @@ export interface ServeOptions {
   readonly port: number;
   readonly signal?: AbortSignal;
   readonly name?: string;
+  readonly maxRequestBodyBytes?: number;
+  readonly headersTimeout?: Duration;
+  readonly requestTimeout?: Duration;
+  readonly keepAliveTimeout?: Duration;
+}
+
+export interface CloseOptions {
+  readonly forceAfter?: Duration;
 }
 
 export class Server implements AsyncDisposable {
   readonly address: SocketAddress;
+  listen(): AsyncResult<Server, Failure>;
   serve(): AsyncResult<void, Failure>;
-  close(): AsyncResult<void, Failure>;
+  closed(): AsyncResult<void, Failure>;
+  close(options?: CloseOptions): AsyncResult<void, Failure>;
 }
 
 export function server(options: ServeOptions & { handle: Handler }): Result<Server, Failure>;
+export function listen(options: ServeOptions & { handle: Handler }): AsyncResult<Server, Failure>;
 export function serve(options: ServeOptions & { handle: Handler }): AsyncResult<void, Failure>;
 ```
+
+`maxRequestBodyBytes` should reject known oversized `Content-Length` requests before invoking
+handlers and enforce streamed Web-handler bodies as they are read. Timeout options map to the
+provider's HTTP server lifecycle controls.
 
 Advanced server options can be added after the first slice:
 
@@ -1051,8 +1083,6 @@ Advanced server options can be added after the first slice:
 - WebSocket upgrade
 - handler execution through `ThreadPool`
 - connection limits
-- request body size limits
-- graceful shutdown deadlines
 
 ## `sts:transport`
 
@@ -1171,34 +1201,60 @@ Legend:
 - `no`: not part of that target profile
 - `later`: intentionally deferred
 
-| Surface               | js-browser | js-node  | wasm-browser | wasm-node | wasm-wasi | native |
-| --------------------- | ---------- | -------- | ------------ | --------- | --------- | ------ |
-| core pure modules     | yes        | yes      | yes          | yes       | yes       | yes    |
-| capabilities query    | yes        | yes      | yes          | yes       | yes       | yes    |
-| path/bytes            | yes        | yes      | yes          | yes       | yes       | yes    |
-| Web URL/text          | yes        | yes      | yes          | yes       | provider  | yes    |
-| fetch/client HTTP     | yes        | yes      | provider     | provider  | provider  | yes    |
-| streams               | yes        | yes      | provider     | provider  | provider  | yes    |
-| console               | yes        | yes      | provider     | provider  | provider  | yes    |
-| crypto random/hash    | yes        | yes      | provider     | provider  | provider  | yes    |
-| time clocks/timers    | yes        | yes      | provider     | provider  | provider  | yes    |
-| TaskGroup/AsyncResult | yes        | yes      | yes          | yes       | yes       | yes    |
-| ThreadPool/Thread     | provider   | provider | provider     | provider  | provider  | yes    |
-| shared memory/atomics | provider   | yes      | provider     | yes       | provider  | yes    |
-| fs                    | no         | yes      | provider     | yes       | provider  | yes    |
-| env read              | no         | yes      | provider     | yes       | provider  | yes    |
-| env write             | no         | provider | no           | provider  | provider  | yes    |
-| cli stdio/args        | no         | yes      | no           | yes       | provider  | yes    |
-| process info/cwd      | no         | yes      | no           | yes       | provider  | yes    |
-| child process         | no         | yes      | no           | yes       | no        | yes    |
-| raw TCP/UDP           | no         | yes      | no           | yes       | provider  | yes    |
-| HTTP server           | no         | yes      | no           | yes       | provider  | yes    |
-| WebSocket             | yes        | provider | provider     | provider  | no        | later  |
-| WebTransport          | provider   | no       | provider     | no        | no        | later  |
-| raw `web:*`           | yes        | no       | yes          | no        | no        | no     |
-| raw `node:*`          | no         | yes      | no           | yes       | no        | no     |
-| raw `native:*`        | no         | no       | no           | no        | no        | yes    |
-| raw `extern:*`        | yes        | yes      | yes          | yes       | no        | later  |
+| Surface                | js-browser | js-node  | wasm-browser | wasm-node | wasm-wasi | native |
+| ---------------------- | ---------- | -------- | ------------ | --------- | --------- | ------ |
+| core pure modules      | yes        | yes      | yes          | yes       | yes       | yes    |
+| capabilities query     | yes        | yes      | yes          | yes       | yes       | yes    |
+| path/bytes             | yes        | yes      | yes          | yes       | yes       | yes    |
+| Web URL/text           | yes        | yes      | yes          | yes       | provider  | yes    |
+| fetch/client HTTP      | yes        | yes      | provider     | provider  | provider  | yes    |
+| streams                | yes        | yes      | provider     | provider  | provider  | yes    |
+| console                | yes        | yes      | provider     | provider  | provider  | yes    |
+| crypto random/hash     | yes        | yes      | provider     | provider  | provider  | yes    |
+| time clocks/timers     | yes        | yes      | provider     | provider  | provider  | yes    |
+| AsyncResult/Task       | yes        | yes      | yes          | yes       | yes       | yes    |
+| TaskGroup/AsyncContext | provider   | yes      | provider     | provider  | provider  | yes    |
+| ThreadPool/Thread      | provider   | provider | provider     | provider  | provider  | yes    |
+| shared memory/atomics  | provider   | yes      | provider     | yes       | provider  | yes    |
+| fs                     | no         | yes      | provider     | yes       | provider  | yes    |
+| env read               | no         | yes      | provider     | yes       | provider  | yes    |
+| env write              | no         | provider | no           | provider  | provider  | yes    |
+| cli stdio/args         | no         | yes      | no           | yes       | provider  | yes    |
+| process info/cwd       | no         | yes      | no           | yes       | provider  | yes    |
+| child process          | no         | yes      | no           | yes       | no        | yes    |
+| DNS/TCP/TLS            | no         | yes      | no           | yes       | provider  | yes    |
+| UDP                    | no         | later    | no           | later     | provider  | yes    |
+| HTTP server            | no         | yes      | no           | yes       | provider  | yes    |
+| WebSocket              | yes        | provider | provider     | provider  | no        | later  |
+| WebTransport           | provider   | no       | provider     | no        | no        | later  |
+| raw `web:*`            | yes        | no       | yes          | no        | no        | no     |
+| raw `node:*`           | no         | yes      | no           | yes       | no        | no     |
+| raw `native:*`         | no         | no       | no           | no        | no        | yes    |
+| raw `extern:*`         | yes        | yes      | yes          | yes       | no        | later  |
+
+## Current JS-First Implementation Snapshot
+
+The current implementation intentionally starts with JS targets and leaves Wasm provider work gated
+until the Wasm runtime/compiler path is ready.
+
+| Module/API                                                                    | js-browser today               | js-node today                                                                                                                                                         |
+| ----------------------------------------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sts:concurrency/task`                                                        | implemented                    | implemented                                                                                                                                                           |
+| `sts:concurrency/runtime`                                                     | gated                          | `TaskGroup`, `TaskHandle`, `AsyncContext`, `Runtime`                                                                                                                  |
+| `sts:capabilities`, `sts:time`, `sts:console`, `sts:path`, `sts:bytes`        | implemented                    | implemented                                                                                                                                                           |
+| `sts:url`, `sts:fetch`, `sts:streams`, `sts:text`, `sts:random`               | implemented                    | implemented                                                                                                                                                           |
+| `sts:fs`                                                                      | gated                          | file read/write, stat/lstat, directories, copy/rename/remove, real path                                                                                               |
+| `sts:env`                                                                     | gated                          | read, require, set, remove, record snapshot                                                                                                                           |
+| `sts:cli`                                                                     | gated                          | args, stdio metadata, terminal checks, terminal size                                                                                                                  |
+| `sts:process`                                                                 | gated                          | process info/cwd/platform/uptime/signals/exit code and child process spawn/output                                                                                     |
+| `sts:http`                                                                    | gated                          | Web `Request`/`Response` server, ready `listen`, run-until-closed `serve`, body limits, server timeouts, force-deadline `close`, low-level Node handler compatibility |
+| `sts:net`                                                                     | gated                          | DNS lookup, TCP connect/listen, TLS connect/listen                                                                                                                    |
+| `sts:concurrency/parallel`, `sts:concurrency/sync`, `sts:concurrency/atomics` | gated/unsupported placeholders | gated/unsupported placeholders                                                                                                                                        |
+
+Browser code should continue to use Web-platform APIs for browser-native capabilities. `sts:fetch`
+is the portable HTTP client surface; `WebSocket` and WebTransport remain Web-platform APIs until a
+future `sts:transport` abstraction is justified. `sts:net` is deliberately raw DNS/TCP/TLS and is
+not a browser networking facade.
 
 ## Implementation Slices
 
@@ -1235,8 +1291,8 @@ Legend:
 ### Slice 5: Networking
 
 - Stabilize `sts:http` server shape.
-- Add `sts:net` TCP/DNS first.
-- Add UDP and TLS after stream/resource semantics settle.
+- Add `sts:net` DNS/TCP/TLS first.
+- Add UDP after stream/resource semantics settle.
 - Keep WebSocket/WebTransport as Web-platform/provider surfaces until `sts:transport` is justified.
 
 ### Slice 6: Low-Level Parallelism

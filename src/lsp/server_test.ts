@@ -791,7 +791,7 @@ Deno.test('LSP server responds to hover using ordinary TypeScript types for .ts 
 
   assertEquals(result?.contents?.kind, 'markdown');
   assertEquals(result?.contents?.value.includes('```ts'), true);
-  assertEquals(result?.contents?.value.includes('const dict: any'), true);
+  assertEquals(result?.contents?.value.includes('const dict: BareObject'), true);
 
   await shutdownServer(client, startPromise);
 });
@@ -7323,8 +7323,8 @@ Deno.test('LSP server publishes flow invalidation metadata and related informati
       languageId: 'soundscript',
       version: 1,
       text: [
-        '// #[extern]',
-        'declare function mutate(box: { value: string | null }): void;',
+        'function mutate(box: { value: string | null }): void { box.value = null; }',
+        '',
         '',
         'function use(box: { value: string | null }) {',
         '  if (box.value !== null) {',
@@ -7628,20 +7628,26 @@ Deno.test('LSP server publishes ambient extern diagnostic metadata in data', asy
 
   assertEquals(params.uri, uri);
   assertEquals(params.diagnostics[0]?.code, 'SOUND1029');
-  assertEquals(params.diagnostics[0]?.data?.metadata?.rule, 'ambient_runtime_requires_extern');
+  assertEquals(
+    params.diagnostics[0]?.data?.metadata?.rule,
+    'ambient_runtime_requires_import_boundary',
+  );
   assertEquals(params.diagnostics[0]?.data?.metadata?.primarySymbol, 'envName');
   assertEquals(
     params.diagnostics[0]?.data?.metadata?.replacementFamily,
-    'site_local_extern_boundary',
+    'extern_import_boundary',
   );
   assertEquals(params.diagnostics[0]?.data?.metadata?.fixability, 'boundary_annotation');
   assertEquals(
     params.diagnostics[0]?.data?.hint,
-    "Use '// #[extern]' only for local runtime-provided declarations, or replace the declaration with a real implementation.",
+    'Move the ambient declaration to `.d.ts` and import the value through `extern:*`, or replace it with a real implementation.',
   );
   assertEquals(params.diagnostics[0]?.data?.notes, [
-    'This local ambient runtime declaration introduces `envName` without a site-local extern boundary.',
-    'Example: Add `// #[extern]` immediately above the declaration, or replace the declaration with a real implementation.',
+    'This local ambient runtime declaration introduces `envName` without an explicit import boundary.',
+    [
+      'Example: // #[interop]',
+      "import { __APP_CONFIG__ as config } from 'extern:globalThis';",
+    ].join('\n'),
   ]);
 
   await shutdownServer(client, startPromise);
@@ -7658,7 +7664,6 @@ Deno.test('LSP server publishes exported ambient diagnostic metadata in data', a
       languageId: 'soundscript',
       version: 1,
       text: [
-        '// #[extern]',
         'export declare const envName: string;',
         '',
       ].join('\n'),
@@ -7698,11 +7703,11 @@ Deno.test('LSP server publishes exported ambient diagnostic metadata in data', a
   assertEquals(params.diagnostics[0]?.data?.metadata?.fixability, 'api_redesign');
   assertEquals(
     params.diagnostics[0]?.data?.hint,
-    "Keep declaration-only runtime names local with '// #[extern]', move exported declaration-only surfaces to '.d.ts', or provide a real implementation.",
+    "Move exported declaration-only surfaces to '.d.ts' or provide a real implementation.",
   );
   assertEquals(params.diagnostics[0]?.data?.notes, [
     'This ambient runtime declaration exports `envName` from a soundscript module even though there is no local implementation.',
-    "Example: Move the declaration to '.d.ts', keep it local with `// #[extern]`, or replace it with a real implementation.",
+    "Example: Move the declaration to '.d.ts' and expose values through explicit imports, or replace it with a real implementation.",
   ]);
 
   await shutdownServer(client, startPromise);
@@ -8202,7 +8207,7 @@ Deno.test(
   },
 );
 
-Deno.test('LSP server offers a quick fix to add #[extern] for ambient runtime declarations', async () => {
+Deno.test('LSP server does not offer a same-file extern quick fix for ambient runtime declarations', async () => {
   const workspace = await createWorkspace();
   await writeWorkspaceFiles(workspace, {
     'src/index.sts': [
@@ -8249,7 +8254,10 @@ Deno.test('LSP server offers a quick fix to add #[extern] for ambient runtime de
   };
 
   assertEquals(params.diagnostics[0]?.code, 'SOUND1029');
-  assertEquals(params.diagnostics[0]?.data?.metadata?.rule, 'ambient_runtime_requires_extern');
+  assertEquals(
+    params.diagnostics[0]?.data?.metadata?.rule,
+    'ambient_runtime_requires_import_boundary',
+  );
 
   const codeActionResult = await requestCodeActions(
     client,
@@ -8258,17 +8266,9 @@ Deno.test('LSP server offers a quick fix to add #[extern] for ambient runtime de
     'Timed out waiting for ambient-extern codeAction response.',
   );
 
-  assertEquals(codeActionResult?.[0]?.title, 'Add #[extern] boundary');
-  assertEquals(codeActionResult?.[0]?.kind, 'quickfix');
   assertEquals(
-    codeActionResult?.[0]?.edit?.changes?.[uri]?.[0],
-    {
-      newText: '// #[extern]\n',
-      range: {
-        start: { line: 0, character: 0 },
-        end: { line: 0, character: 0 },
-      },
-    },
+    codeActionResult?.some((action) => action.title.includes('#[extern]')) ?? false,
+    false,
   );
 
   await shutdownServer(client, startPromise);
@@ -9168,8 +9168,8 @@ Deno.test('LSP server offers a quick fix to remove non-null assertions', async (
   const workspace = await createWorkspace();
   await writeWorkspaceFiles(workspace, {
     'src/index.sts': [
-      '// #[extern]',
-      'declare const maybe: string | undefined;',
+      'const maybe: string | undefined = undefined;',
+      '',
       'const value = maybe!;',
       '',
     ].join('\n'),
@@ -9183,8 +9183,8 @@ Deno.test('LSP server offers a quick fix to remove non-null assertions', async (
       languageId: 'soundscript',
       version: 1,
       text: [
-        '// #[extern]',
-        'declare const maybe: string | undefined;',
+        'const maybe: string | undefined = undefined;',
+        '',
         'const value = maybe!;',
         '',
       ].join('\n'),
@@ -9303,7 +9303,6 @@ Deno.test('LSP server offers a quick fix to remove exports from ambient runtime 
   const workspace = await createWorkspace();
   await writeWorkspaceFiles(workspace, {
     'src/index.sts': [
-      '// #[extern]',
       'export declare const envName: string;',
       '',
     ].join('\n'),
@@ -9317,7 +9316,6 @@ Deno.test('LSP server offers a quick fix to remove exports from ambient runtime 
       languageId: 'soundscript',
       version: 1,
       text: [
-        '// #[extern]',
         'export declare const envName: string;',
         '',
       ].join('\n'),
@@ -9362,8 +9360,8 @@ Deno.test('LSP server offers a quick fix to remove exports from ambient runtime 
     {
       newText: '',
       range: {
-        start: { line: 1, character: 0 },
-        end: { line: 1, character: 7 },
+        start: { line: 0, character: 0 },
+        end: { line: 0, character: 7 },
       },
     },
   );
@@ -9418,8 +9416,8 @@ Deno.test('LSP server offers a quick fix to remove invalid annotation comments',
     uri: string;
   };
 
-  const diagnostic = params.diagnostics.find((entry) => entry.code === 'SOUND1027');
-  assertEquals(diagnostic?.data?.metadata?.rule, 'invalid_annotation_target');
+  const diagnostic = params.diagnostics.find((entry) => entry.code === 'SOUND1007');
+  assertEquals(diagnostic?.data?.metadata?.rule, 'extern_annotation_removed');
   assertEquals(diagnostic?.data?.metadata?.primarySymbol, '#[extern]');
 
   const codeActionResult = await requestCodeActions(
@@ -9429,7 +9427,7 @@ Deno.test('LSP server offers a quick fix to remove invalid annotation comments',
     'Timed out waiting for invalid-annotation-target codeAction response.',
   );
 
-  assertEquals(codeActionResult?.[0]?.title, 'Remove invalid annotation comment');
+  assertEquals(codeActionResult?.[0]?.title, 'Remove unknown annotation comment');
   assertEquals(codeActionResult?.[0]?.kind, 'quickfix');
   assertEquals(
     codeActionResult?.[0]?.edit?.changes?.[uri]?.[0],
@@ -10310,9 +10308,9 @@ Deno.test('LSP server offers a quick fix to remove duplicate annotations in a bl
   const workspace = await createWorkspace();
   await writeWorkspaceFiles(workspace, {
     'src/index.sts': [
-      '// #[extern]',
-      '// #[extern]',
-      'declare const envName: string;',
+      '// #[unsafe]',
+      '// #[unsafe]',
+      'const envName = "dev";',
       'void envName;',
       '',
     ].join('\n'),
@@ -10326,9 +10324,9 @@ Deno.test('LSP server offers a quick fix to remove duplicate annotations in a bl
       languageId: 'soundscript',
       version: 1,
       text: [
-        '// #[extern]',
-        '// #[extern]',
-        'declare const envName: string;',
+        '// #[unsafe]',
+        '// #[unsafe]',
+        'const envName = "dev";',
         'void envName;',
         '',
       ].join('\n'),
@@ -10382,7 +10380,7 @@ Deno.test('LSP server offers a quick fix to remove duplicate annotations in a bl
   await shutdownServer(client, startPromise);
 });
 
-Deno.test('LSP server does not publish diagnostics for unknown annotation namespaces', async () => {
+Deno.test('LSP server publishes diagnostics for unknown annotation namespaces', async () => {
   const workspace = await createWorkspace();
   await writeWorkspaceFiles(workspace, {
     'src/index.sts': [
@@ -10428,7 +10426,8 @@ Deno.test('LSP server does not publish diagnostics for unknown annotation namesp
     uri: string;
   };
 
-  assertEquals(params.diagnostics, []);
+  assertEquals(params.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1007']);
+  assertEquals(params.diagnostics[0]?.data?.metadata?.rule, 'unknown_annotation');
 
   await shutdownServer(client, startPromise);
 });
@@ -10437,8 +10436,8 @@ Deno.test('LSP server offers a quick fix to remove unsupported annotation argume
   const workspace = await createWorkspace();
   await writeWorkspaceFiles(workspace, {
     'src/index.sts': [
-      '// #[extern(foo)]',
-      'declare const envName: string;',
+      '// #[unsafe(foo)]',
+      'const envName = "dev";',
       'void envName;',
       '',
     ].join('\n'),
@@ -10452,8 +10451,8 @@ Deno.test('LSP server offers a quick fix to remove unsupported annotation argume
       languageId: 'soundscript',
       version: 1,
       text: [
-        '// #[extern(foo)]',
-        'declare const envName: string;',
+        '// #[unsafe(foo)]',
+        'const envName = "dev";',
         'void envName;',
         '',
       ].join('\n'),
@@ -10496,7 +10495,7 @@ Deno.test('LSP server offers a quick fix to remove unsupported annotation argume
   assertEquals(
     codeActionResult?.[0]?.edit?.changes?.[uri]?.[0],
     {
-      newText: '// #[extern]',
+      newText: '// #[unsafe]',
       range: {
         start: { line: 0, character: 0 },
         end: { line: 0, character: 17 },
@@ -10511,10 +10510,10 @@ Deno.test('LSP server offers a quick fix to alias imported annotation macros tha
   const workspace = await createWorkspace();
   await writeWorkspaceFiles(workspace, {
     'src/index.sts': [
-      "import { extern } from 'macros/test';",
+      "import { unsafe } from 'macros/test';",
       '',
-      '// #[extern]',
-      'declare const envName: string;',
+      '// #[unsafe]',
+      'const envName = "dev";',
       'void envName;',
       '',
     ].join('\n'),
@@ -10528,10 +10527,10 @@ Deno.test('LSP server offers a quick fix to alias imported annotation macros tha
       languageId: 'soundscript',
       version: 1,
       text: [
-        "import { extern } from 'macros/test';",
+        "import { unsafe } from 'macros/test';",
         '',
-        '// #[extern]',
-        'declare const envName: string;',
+        '// #[unsafe]',
+        'const envName = "dev";',
         'void envName;',
         '',
       ].join('\n'),
@@ -10547,9 +10546,9 @@ Deno.test('LSP server offers a quick fix to alias imported annotation macros tha
         metadata: {
           rule: 'reserved_annotation_name_conflict',
           evidence: [
-            { label: 'annotationName', value: 'extern' },
+            { label: 'annotationName', value: 'unsafe' },
             { label: 'importSpecifier', value: 'macros/test' },
-            { label: 'importedBinding', value: 'extern' },
+            { label: 'importedBinding', value: 'unsafe' },
           ],
         },
       },
@@ -10569,14 +10568,14 @@ Deno.test('LSP server offers a quick fix to alias imported annotation macros tha
     codeActionResult?.[0]?.edit?.changes?.[uri],
     [
       {
-        newText: 'extern as macroExtern',
+        newText: 'unsafe as macroUnsafe',
         range: {
           start: { line: 0, character: 9 },
           end: { line: 0, character: 15 },
         },
       },
       {
-        newText: '// #[macroExtern]',
+        newText: '// #[macroUnsafe]',
         range: {
           start: { line: 2, character: 0 },
           end: { line: 2, character: 12 },

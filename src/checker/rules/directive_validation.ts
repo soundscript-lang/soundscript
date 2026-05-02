@@ -55,13 +55,6 @@ function isUnsafeTargetNode(targetNode: ts.Node): boolean {
     !ts.isImportEqualsDeclaration(targetNode);
 }
 
-function hasDeclareModifier(targetNode: ts.Node): boolean {
-  return ts.canHaveModifiers(targetNode) &&
-    ts.getModifiers(targetNode)?.some((modifier) =>
-        modifier.kind === ts.SyntaxKind.DeclareKeyword
-      ) === true;
-}
-
 function normalizeFileName(fileName: string): string {
   return fileName.replaceAll('\\', '/').toLowerCase();
 }
@@ -252,56 +245,6 @@ function typeNodeCarriesProofOracle(
   return false;
 }
 
-function variableStatementCarriesProofOracle(
-  context: AnalysisContext,
-  targetNode: ts.VariableStatement,
-): boolean {
-  return targetNode.declarationList.declarations.some((declaration) => {
-    if (!ts.isIdentifier(declaration.name)) {
-      return true;
-    }
-
-    return !!declaration.type &&
-      typeNodeCarriesProofOracle(context, declaration.type, new Set<ts.Symbol>());
-  });
-}
-
-function classDeclarationCarriesProofOracle(
-  context: AnalysisContext,
-  targetNode: ts.ClassDeclaration,
-): boolean {
-  return declarationMembersCarryProofOracle(context, targetNode.members, new Set<ts.Symbol>()) ||
-    targetNode.heritageClauses?.some((clause) =>
-        clause.types.some((type) => {
-          const symbol = resolveReferencedTypeSymbol(context, type);
-          return !!symbol && symbolCarriesProofOracle(context, symbol, new Set<ts.Symbol>());
-        })
-      ) === true;
-}
-
-function isExternTargetNode(
-  context: AnalysisContext,
-  targetNode: ts.Node,
-): boolean {
-  if (!hasDeclareModifier(targetNode)) {
-    return false;
-  }
-
-  if (ts.isVariableStatement(targetNode)) {
-    return !variableStatementCarriesProofOracle(context, targetNode);
-  }
-
-  if (ts.isFunctionDeclaration(targetNode)) {
-    return !signatureCarriesProofOracle(context, targetNode, new Set<ts.Symbol>());
-  }
-
-  if (ts.isClassDeclaration(targetNode)) {
-    return !classDeclarationCarriesProofOracle(context, targetNode);
-  }
-
-  return false;
-}
-
 function isVarianceTargetNode(targetNode: ts.Node): boolean {
   return (
     ts.isInterfaceDeclaration(targetNode) ||
@@ -327,7 +270,6 @@ function isUnionBackedNewtypeTarget(
 
 function isKnownAnnotation(annotationName: string): boolean {
   return annotationName === 'effects' ||
-    annotationName === 'extern' ||
     annotationName === 'interop' ||
     annotationName === 'newtype' ||
     annotationName === 'unsafe' ||
@@ -352,7 +294,7 @@ function createUnknownAnnotationMessage(annotation: ParsedAnnotation): string {
 }
 
 function getRegisteredBuiltinAnnotationsText(): string {
-  return 'effects, extern, interop, newtype, unsafe, value, variance';
+  return 'effects, interop, newtype, unsafe, value, variance';
 }
 
 function createMalformedAnnotationDiagnostic(
@@ -403,38 +345,52 @@ function createUnknownAnnotationDiagnostic(
 ): SoundDiagnostic {
   const label = `#[${annotation.name}]`;
   const registeredBuiltins = getRegisteredBuiltinAnnotationsText();
-  const example =
-    `Replace \`${label}\` with a registered builtin annotation such as \`#[extern]\`, or remove it until that directive exists.`;
+  const isRetiredExtern = annotation.name === 'extern';
+  const example = isRetiredExtern
+    ? [
+      '// #[interop]',
+      "import { __APP_CONFIG__ as config } from 'extern:globalThis';",
+    ].join('\n')
+    : `Replace \`${label}\` with a registered builtin annotation such as \`#[interop]\`, or remove it until that directive exists.`;
 
   return createDiagnostic(
     filePath,
     line,
     1,
     SOUND_DIAGNOSTIC_CODES.unknownAnnotation,
-    createUnknownAnnotationMessage(annotation),
+    isRetiredExtern
+      ? `${SOUND_DIAGNOSTIC_MESSAGES.unknownAnnotation} \`#[extern]\` has been removed.`
+      : createUnknownAnnotationMessage(annotation),
     {
       metadata: {
-        rule: 'unknown_annotation',
+        rule: isRetiredExtern ? 'extern_annotation_removed' : 'unknown_annotation',
         primarySymbol: label,
-        fixability: 'local_rewrite',
-        invariant:
-          'Only registered soundscript annotations carry builtin checked semantics in annotation position.',
-        replacementFamily: 'registered_annotation_name',
+        fixability: isRetiredExtern ? 'boundary_annotation' : 'local_rewrite',
+        invariant: isRetiredExtern
+          ? 'Ambient host/app values must cross explicit import boundaries instead of same-file `#[extern]` declarations.'
+          : 'Only registered soundscript annotations carry builtin checked semantics in annotation position.',
+        replacementFamily: isRetiredExtern
+          ? 'extern_import_boundary'
+          : 'registered_annotation_name',
         evidence: [
           { label: 'annotationName', value: annotation.name },
           { label: 'registeredBuiltins', value: registeredBuiltins },
         ],
-        counterexample:
-          'An unknown annotation can look like a checked contract even though soundscript gives it no semantics.',
+        counterexample: isRetiredExtern
+          ? 'A same-file extern declaration gives the identifier a local declaration while its ambient type source stays implicit.'
+          : 'An unknown annotation can look like a checked contract even though soundscript gives it no semantics.',
         example,
       },
       notes: [
-        `\`${label}\` is not a registered builtin soundscript annotation.`,
-        'Registered builtin annotations in v1 are `#[effects(...)]`, `#[extern]`, `#[interop]`, `#[newtype]`, `#[unsafe]`, `#[value]`, and `#[variance(...)]`.',
+        isRetiredExtern
+          ? '`#[extern]` has been removed; use a reserved `extern:*` import or an ordinary `#[interop]` host import instead.'
+          : `\`${label}\` is not a registered builtin soundscript annotation.`,
+        'Registered builtin annotations in v1 are `#[effects(...)]`, `#[interop]`, `#[newtype]`, `#[unsafe]`, `#[value]`, and `#[variance(...)]`.',
         `Example: ${example}`,
       ],
-      hint:
-        'Rename the annotation to a registered builtin, or remove it until that directive exists.',
+      hint: isRetiredExtern
+        ? 'Replace same-file `#[extern] declare ...` with `// #[interop]` and an `extern:globalThis` or `extern:global` import.'
+        : 'Rename the annotation to a registered builtin, or remove it until that directive exists.',
     },
   );
 }
@@ -553,10 +509,6 @@ function createInvalidTargetMessage(annotation: ParsedAnnotation): string {
 
   if (annotation.name === 'interop') {
     return `${SOUND_DIAGNOSTIC_MESSAGES.invalidAnnotationTarget} \`#[interop]\` must attach to an import, \`require(...)\`, or \`import(...)\` boundary.`;
-  }
-
-  if (annotation.name === 'extern') {
-    return `${SOUND_DIAGNOSTIC_MESSAGES.invalidAnnotationTarget} \`#[extern]\` must attach to a local ambient runtime declaration.`;
   }
 
   if (annotation.name === 'variance') {
@@ -712,10 +664,6 @@ function describeExpectedAnnotationTarget(annotationName: string, ownerName?: st
 
   if (annotationName === 'effects') {
     return 'callable declaration, callable signature, or function-valued parameter';
-  }
-
-  if (annotationName === 'extern') {
-    return 'local ambient runtime declaration';
   }
 
   if (annotationName === 'variance') {
@@ -984,8 +932,6 @@ function validateAnnotationBlock(
 
     const isValidTarget = annotation.name === 'interop'
       ? isInteropTargetNode(block.targetNode)
-      : annotation.name === 'extern'
-      ? isExternTargetNode(context, block.targetNode)
       : annotation.name === 'variance'
       ? isVarianceTargetNode(block.targetNode)
       : annotation.name === 'value'

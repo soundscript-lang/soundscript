@@ -32,6 +32,7 @@ export const STABLE_RUNTIME_MODULES = [
   'failures',
   'url',
   'fetch',
+  'streams',
   'text',
   'random',
   'json',
@@ -42,7 +43,23 @@ export const STABLE_RUNTIME_MODULES = [
   'decode',
   'encode',
   'codec',
-  'async',
+  'concurrency',
+  'concurrency/task',
+  'concurrency/runtime',
+  'concurrency/parallel',
+  'concurrency/sync',
+  'concurrency/atomics',
+  'capabilities',
+  'time',
+  'console',
+  'path',
+  'bytes',
+  'fs',
+  'env',
+  'cli',
+  'process',
+  'http',
+  'net',
   'numerics',
 ] as const;
 
@@ -54,9 +71,8 @@ export const SOURCE_ONLY_RUNTIME_MODULES = [
   'debug',
 ] as const;
 
-export const HOST_RUNTIME_MODULES = [
-  'host/dom',
-  'host/node',
+export const RAW_HOST_RUNTIME_MODULES = [
+  'web/dom',
 ] as const;
 
 export const CLI_TARGETS: readonly CliTarget[] = [

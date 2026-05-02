@@ -5,6 +5,7 @@ import {
   createSoundStdlibCompilerHost,
   resolveBundledTypesDirectory,
 } from '../bundled/sound_stdlib.ts';
+import { isExternDeclarationModuleFileName } from '../frontend/extern_module_support.ts';
 import {
   type BuiltinDiagnosticProgram,
   type BuiltinExpandedTsDiagnosticProgram,
@@ -173,6 +174,7 @@ const soundRuleCacheKeyPrinter = ts.createPrinter({
 
 interface PrepareProjectAnalysisOptions {
   deferTypescriptView?: boolean;
+  forceTypescriptView?: boolean;
   packageVerificationCacheDir?: string;
   usePackageVerificationCache?: boolean;
   persistentBuildInfoDirectory?: string;
@@ -324,7 +326,8 @@ function prepareProjectAnalysisOptionsEqual(
   left: PrepareProjectAnalysisOptions,
   right: PrepareProjectAnalysisOptions,
 ): boolean {
-  return (left.deferTypescriptView ?? false) === (right.deferTypescriptView ?? false);
+  return (left.deferTypescriptView ?? false) === (right.deferTypescriptView ?? false) &&
+    (left.forceTypescriptView ?? false) === (right.forceTypescriptView ?? false);
 }
 
 function collectChangedFileOverridePaths(
@@ -2410,6 +2413,8 @@ function retainSoundDiagnosticsAlongsideTsErrors(
   return diagnostics.filter((diagnostic): diagnostic is SoundDiagnostic =>
     diagnostic.source === 'sound' &&
     (diagnostic.code === SOUND_DIAGNOSTIC_CODES.bannedTypeScriptPragma ||
+      diagnostic.code === SOUND_DIAGNOSTIC_CODES.invalidExternImport ||
+      diagnostic.code === SOUND_DIAGNOSTIC_CODES.unavailableRuntimeCapability ||
       diagnostic.code === SOUND_DIAGNOSTIC_CODES.constructionLifecycleViolation ||
       diagnostic.code === SOUND_DIAGNOSTIC_CODES.fieldReadBeforeInitialization)
   );
@@ -2990,11 +2995,14 @@ function collectPreparedViewTsDiagnostics(
               : [];
           });
         });
+      const diagnosticsWithoutExternModules = collectedDiagnostics.filter((diagnostic) =>
+        !diagnostic.file || !isExternDeclarationModuleFileName(diagnostic.file.fileName)
+      );
       const filteredDiagnostics = preparedView.tsDiagnosticSourceFileFilter
-        ? collectedDiagnostics.filter((diagnostic) =>
+        ? diagnosticsWithoutExternModules.filter((diagnostic) =>
           !diagnostic.file || preparedView.tsDiagnosticSourceFileFilter!(diagnostic.file)
         )
-        : collectedDiagnostics;
+        : diagnosticsWithoutExternModules;
       metadata.diagnostics = filteredDiagnostics.length;
       return filteredDiagnostics;
     },
@@ -3668,8 +3676,12 @@ export function prepareProjectAnalysis(
         options.additionalRootNames,
       );
       const soundscriptRootNames = allRootNames.filter(loadedConfig.isSoundscriptSourceFile);
+      const typescriptRootNames = allRootNames.filter((rootName) =>
+        !loadedConfig.isSoundscriptSourceFile(rootName)
+      );
       const declarationRootNames = allRootNames.filter(isDeclarationRootFileName);
       const shouldDeferTypescriptView = prepareOptions.deferTypescriptView === true;
+      const shouldForceTypescriptView = prepareOptions.forceTypescriptView === true;
       const projectedSoundscriptRootNames = soundscriptRootNames;
       const stsProgramRootNames = soundscriptRootNames.length === 0 ? [] : combineRootNames(
         projectedSoundscriptRootNames,
@@ -3822,7 +3834,59 @@ export function prepareProjectAnalysis(
             soundscriptRootNameSet,
             projectPackageJsonPath,
           ));
-      if (!needsSupplementalProjectionViews) {
+      const prepareTypescriptView = (
+        projectedDeclarationOverrides: ReadonlyMap<string, string> | undefined,
+      ): PreparedAnalysisView | null => {
+        if (!shouldForceTypescriptView) {
+          return null;
+        }
+
+        const metadata: Record<string, string | number> = {
+          rootCount: typescriptRootNames.length,
+        };
+        return measureCheckerTiming(
+          'project.prepare.tsView',
+          metadata,
+          () => {
+            const preparedView = prepareAnalysisView(
+              options,
+              loadedConfig,
+              loadedConfig.commandLine,
+              typescriptRootNames,
+              createSoundStdlibCompilerHost(
+                loadedConfig.commandLine.options,
+                dirname(options.projectPath),
+              ),
+              [],
+              (sourceFile) =>
+                shouldAnalyzeTypescriptViewSourceFile(
+                  sourceFile,
+                  loadedConfig.isSoundscriptSourceFile,
+                ),
+              projectedDeclarationOverrides,
+              false,
+              'full',
+              canReuseConfigArtifacts
+                ? reusableProject?.tsCompilerHostReuseState
+                : persistentTsCompilerHostReuseState,
+              canReuseConfigArtifacts ? reusableProject?.tsView?.program : undefined,
+              'ts',
+              prepareOptions.persistentBuildInfoDirectory,
+              (sourceFile) =>
+                shouldAnalyzeTypescriptViewSourceFile(
+                  sourceFile,
+                  loadedConfig.isSoundscriptSourceFile,
+                ),
+            );
+            if (preparedView) {
+              applyMacroCacheStatsToMetadata(metadata, preparedView.macroCacheStats);
+            }
+            return preparedView;
+          },
+          { always: true },
+        );
+      };
+      if (!needsSupplementalProjectionViews && !shouldForceTypescriptView) {
         const preparedProject = {
           analyzeOptions: { ...options },
           configReuseSignature,
@@ -3879,6 +3943,7 @@ export function prepareProjectAnalysis(
         localProjectedDeclarationOverrides,
         cachedPackageProjectedDeclarationOverrides,
       );
+      const tsView = prepareTypescriptView(projectedDeclarationOverrides);
       const packageProjectedDeclarationRootNames = combineRootNames(
         collectProjectedDeclarationCandidateRootNamesFromPrograms(
           [stsView?.program],
@@ -3968,10 +4033,15 @@ export function prepareProjectAnalysis(
         soundscriptRootNames,
         stsView,
         tsCompilerHostReuseState: canReuseConfigArtifacts
-          ? reusableProject?.tsCompilerHostReuseState
-          : persistentTsCompilerHostReuseState,
-        typescriptViewContentSignature: '',
-        tsView: null,
+          ? tsView?.preparedProgram.preparedHost.reuseState ??
+            reusableProject?.tsCompilerHostReuseState
+          : tsView?.preparedProgram.preparedHost.reuseState ??
+            persistentTsCompilerHostReuseState,
+        typescriptViewContentSignature: createPreparedViewProgramContentSignature(
+          tsView,
+          options.fileOverrides ?? new Map(),
+        ),
+        tsView,
       };
       applyMacroCacheStatsToMetadata(prepareMetadata, aggregateMacroCacheStats(preparedProject));
       return preparedProject;

@@ -61,10 +61,10 @@ function isTrustedCoreStdlibDeclarationFile(fileName: string): boolean {
 function createAmbientHostValueDiagnostic(node: ts.Identifier): SoundDiagnostic {
   const example = [
     '// #[interop]',
-    "import { document } from 'host:dom';",
+    "import { document } from 'web:dom';",
     '',
-    '// #[extern]',
-    'declare const process: NodeJS.Process;',
+    '// #[interop]',
+    "import process from 'node:process';",
   ].join('\n');
 
   return {
@@ -79,14 +79,14 @@ function createAmbientHostValueDiagnostic(node: ts.Identifier): SoundDiagnostic 
       replacementFamily: 'host_value_boundary',
       example,
       invariant:
-        'Ambient host values from DOM, Node, or foreign declaration files must cross an explicit import or same-file extern boundary before use in checked soundscript.',
+        'Ambient host values from DOM, Node, or foreign declaration files must cross an explicit import boundary before use in checked soundscript.',
     },
     notes: [
       `This value resolves to an ambient host declaration for \`${node.text}\`, not to a local implementation or import boundary.`,
       `Example: ${example}`,
     ],
     hint:
-      'Import the host value through an explicit boundary such as `host:dom` / `host:node`, or add a same-file `// #[extern]` declaration when the runtime truly provides it.',
+      'Import the host value through an explicit boundary such as `web:dom`, `node:*`, or `extern:*`.',
     ...getNodeDiagnosticRange(node),
   };
 }

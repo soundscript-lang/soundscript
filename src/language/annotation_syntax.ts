@@ -161,7 +161,6 @@ export interface AnnotationLookup {
 const ANNOTATION_COMMENT_PATTERN = /^\/\/\s*#\[/u;
 export const BUILTIN_DIRECTIVE_NAMES: ReadonlySet<string> = new Set([
   'effects',
-  'extern',
   'interop',
   'newtype',
   'unsafe',

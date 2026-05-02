@@ -79,8 +79,9 @@ Implemented and shipping in the repo today:
 - implemented `sts:*` builtin modules, with the stable v1 core centered on `sts:prelude`,
   `sts:result`, `sts:match`, `sts:failures`, `sts:url`, `sts:fetch`, `sts:text`, `sts:random`,
   `sts:json`, `sts:compare`, `sts:hash`, `sts:decode`, `sts:encode`, `sts:codec`, `sts:derive`,
-  `sts:async`, `sts:hkt`, `sts:typeclasses`, and `sts:macros`, plus implemented experimental builtin
-  modules such as `sts:numerics`, `sts:value`, and `sts:experimental/*`
+  `sts:concurrency/task`, `sts:capabilities`, `sts:time`, `sts:console`, `sts:path`, `sts:bytes`,
+  `sts:hkt`, `sts:typeclasses`, and `sts:macros`, plus implemented experimental builtin modules such
+  as `sts:numerics`, `sts:value`, and `sts:experimental/*`
 - a real macro system with declaration, rewrite, control-flow, branch, and fragment macros,
   restricted compile-time execution, and real editor / fragment tooling hooks
 - implemented experimental language work including class nominality, `#[newtype]`, `#[value]`, and a

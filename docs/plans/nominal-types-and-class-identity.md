@@ -48,8 +48,8 @@ That gives a coherent model:
 
 ## Annotation System Direction
 
-The nominal/value annotation surface uses the same `// #[...]` form already used by `#[extern]`,
-`#[interop]`, and `#[unsafe]`.
+The nominal/value annotation surface uses the same `// #[...]` form used by `#[interop]`,
+`#[unsafe]`, and other compiler-owned annotations.
 
 The nominal/layout-related additions should be:
 
@@ -58,8 +58,8 @@ The nominal/layout-related additions should be:
 
 These annotations now exist in the repo. `#[newtype]` participates in annotation validation,
 projected declarations, and relation checking. `#[value]` has dedicated checker rules and JS
-emit/runtime behavior, while current Wasm `compile` paths still reject it. This document remains
-the higher-level nominal design note rather than an implementation changelog.
+emit/runtime behavior, while current Wasm `compile` paths still reject it. This document remains the
+higher-level nominal design note rather than an implementation changelog.
 
 ## `// #[newtype]`
 
@@ -128,9 +128,11 @@ This plan is partly future-facing.
 
 Current shipped v1 recognizes the existing site-local annotation family:
 
-- `// #[extern]`
 - `// #[interop]`
 - `// #[unsafe]`
+
+`// #[extern]` has since been removed. Ambient host/app values now cross explicit import boundaries
+through `extern:*` modules plus `// #[interop]`.
 
 Current shipped v1 also treats class instance targets as nominal:
 

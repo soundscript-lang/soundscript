@@ -16,6 +16,7 @@ import {
   DIST_ROOT,
   LICENSE_SOURCE,
   parseVersion,
+  RAW_HOST_RUNTIME_MODULES,
   ROOT,
   SHIM_DIST,
   SOUNDSCRIPT_HOMEPAGE_URL,
@@ -306,8 +307,14 @@ async function prepareStdlibPackage(version: string): Promise<void> {
   await Deno.mkdir(join(CANONICAL_DIST, 'soundscript', 'experimental'), { recursive: true });
   await Deno.mkdir(join(CANONICAL_DIST, 'bin'), { recursive: true });
 
-  const stdlibDeclarationsByBaseName = new Map(
-    [...getStdlibDeclarationTexts().entries()].map(([filePath, text]) => [basename(filePath), text] as const),
+  const stdlibDeclarationRoot = dirname(STDLIB_DECLARATION_FILE);
+  const stdlibDeclarationsByRelativePath = new Map(
+    [...getStdlibDeclarationTexts().entries()].map(([filePath, text]) =>
+      [
+        relative(stdlibDeclarationRoot, filePath),
+        text,
+      ] as const
+    ),
   );
   const rootSource = rewriteModuleSpecifiersForEmit(
     Deno.readTextFileSync(join(ROOT, 'src', 'stdlib', 'index.ts')),
@@ -315,7 +322,7 @@ async function prepareStdlibPackage(version: string): Promise<void> {
     { moduleSpecifierMode: 'source-sts' },
   );
   const rootDeclarations = rewriteModuleSpecifiersForEmit(
-    stdlibDeclarationsByBaseName.get('index.d.ts') ??
+    stdlibDeclarationsByRelativePath.get('index.d.ts') ??
       (() => {
         throw new Error('Missing generated stdlib declaration for index.d.ts.');
       })(),
@@ -340,7 +347,7 @@ async function prepareStdlibPackage(version: string): Promise<void> {
       { moduleSpecifierMode: 'source-sts' },
     );
     const rewrittenDeclarations = rewriteModuleSpecifiersForEmit(
-      stdlibDeclarationsByBaseName.get(`${moduleName}.d.ts`) ??
+      stdlibDeclarationsByRelativePath.get(`${moduleName}.d.ts`) ??
         (() => {
           throw new Error(`Missing generated stdlib declaration for ${moduleName}.d.ts.`);
         })(),
@@ -368,7 +375,7 @@ async function prepareStdlibPackage(version: string): Promise<void> {
       { moduleSpecifierMode: 'source-sts' },
     );
     const rewrittenDeclarations = rewriteModuleSpecifiersForEmit(
-      stdlibDeclarationsByBaseName.get(`${moduleName}.d.ts`) ??
+      stdlibDeclarationsByRelativePath.get(`${moduleName}.d.ts`) ??
         (() => {
           throw new Error(`Missing generated stdlib declaration for ${moduleName}.d.ts.`);
         })(),
@@ -392,6 +399,27 @@ async function prepareStdlibPackage(version: string): Promise<void> {
       rewrittenDeclarations,
     );
   }
+
+  for (const moduleName of RAW_HOST_RUNTIME_MODULES) {
+    const sourcePath = join(ROOT, 'src', 'stdlib', `${moduleName}.ts`);
+    const declarationPath = join(ROOT, 'src', 'stdlib', `${moduleName}.d.ts`);
+    const rewrittenSource = rewriteModuleSpecifiersForEmit(
+      Deno.readTextFileSync(sourcePath),
+      sourcePath,
+      { moduleSpecifierMode: 'emit-js' },
+    );
+    await writeTranspiledModule(
+      join(CANONICAL_DIST, `${moduleName}.js`),
+      sourcePath,
+      rewrittenSource,
+      `./src/stdlib/${moduleName}.ts`,
+    );
+    await writeTextFile(
+      join(CANONICAL_DIST, `${moduleName}.d.ts`),
+      Deno.readTextFileSync(declarationPath),
+    );
+  }
+
   await Deno.writeTextFile(
     join(CANONICAL_DIST, 'bin', 'soundscript.js'),
     createCliLauncherSource(),
@@ -428,6 +456,13 @@ async function prepareStdlibPackage(version: string): Promise<void> {
         },
       ],
       ...STABLE_RUNTIME_MODULES.map((moduleName) => [
+        `./${moduleName}`,
+        {
+          types: `./${moduleName}.d.ts`,
+          import: `./${moduleName}.js`,
+        },
+      ]),
+      ...RAW_HOST_RUNTIME_MODULES.map((moduleName) => [
         `./${moduleName}`,
         {
           types: `./${moduleName}.d.ts`,
@@ -472,6 +507,11 @@ async function prepareStdlibPackage(version: string): Promise<void> {
       'index.d.ts',
       'project-transform/**',
       ...STABLE_RUNTIME_MODULES.flatMap((moduleName) => [
+        `${moduleName}.js`,
+        `${moduleName}.js.map`,
+        `${moduleName}.d.ts`,
+      ]),
+      ...RAW_HOST_RUNTIME_MODULES.flatMap((moduleName) => [
         `${moduleName}.js`,
         `${moduleName}.js.map`,
         `${moduleName}.d.ts`,
