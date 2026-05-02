@@ -1210,17 +1210,16 @@ function pushPromiseCatchIntoClosure(
   const catchBindingName = catchInfo.catchBinding?.kind === 'identifier_binding'
     ? catchInfo.catchBinding.name
     : undefined;
-  if (catchBindingName) {
-    const reads: string[] = [];
-    catchInfo.catchBlock.forEach((statement) =>
-      collectSourceStatementIdentifierReads(statement, reads)
-    );
-    if (reads.includes(catchBindingName)) {
-      context.unsupportedKinds.add('async_await_catch_binding');
-      return undefined;
-    }
-  }
-
+  const catchBindingUsed = catchBindingName
+    ? (() => {
+      const names: string[] = [];
+      catchInfo.catchBlock.forEach((statement) => {
+        collectSourceStatementIdentifierReads(statement, names);
+        collectSourceStatementAssignedNames(statement, names);
+      });
+      return names.includes(catchBindingName);
+    })()
+    : false;
   const closureFunctionId = context.moduleState.nextClosureFunctionId;
   context.moduleState.nextClosureFunctionId += 1;
   const closureContext = createAsyncAwaitContinuationContext(
@@ -1228,6 +1227,19 @@ function pushPromiseCatchIntoClosure(
     `closure_source_async_await_rejected_catch_${closureFunctionId}`,
     captures,
   );
+  if (catchBindingName && catchBindingUsed) {
+    // Promise rejection reasons are compiler-owned tagged values at the boundary.
+    // Keep this local tagged and let ordinary expression lowering untag when needed.
+    addLocal(closureContext, catchBindingName, 'tagged_ref');
+    closureContext.localDeclarationKinds.set(catchBindingName, 'let');
+  }
+  const catchBindingStatements: SemanticStatementIR[] = catchBindingName && catchBindingUsed
+    ? [{
+      kind: 'local_set',
+      name: catchBindingName,
+      value: localGetExpression('promise_reason', 'tagged_ref'),
+    }]
+    : [];
   const catchBody = catchInfo.catchBlock.flatMap((statement) => [
     ...lowerStatement(statement, closureContext),
   ]);
@@ -1241,6 +1253,7 @@ function pushPromiseCatchIntoClosure(
     return undefined;
   }
   const body: SemanticStatementIR[] = [
+    ...catchBindingStatements,
     ...catchBody,
     ...resolveStatements,
   ];
