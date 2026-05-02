@@ -133,9 +133,9 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
     family: 'promises',
     status: 'ir-shadowed',
     focusedGate:
-      'compileProject selects the source-hir wasm-gc plan for multiple awaits inside loop statements',
+      'compileProject selects the source-hir wasm-gc plan for awaits inside do while statements',
     nextCutoverStep:
-      'Broaden SourceHIR async-await loop lowering to do-while loops while keeping JSPI limited to host-promise boundaries.',
+      'Broaden SourceHIR async-await lowering through try/catch/finally completion paths while keeping JSPI limited to host-promise boundaries.',
   },
   {
     family: 'generators',
