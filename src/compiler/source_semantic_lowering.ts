@@ -6650,6 +6650,7 @@ function lowerFunctionBody(
 }
 
 interface SourceAwaitStep {
+  assignmentTargetName?: string;
   binding?: Extract<SourceBindingIR, { kind: 'identifier_binding' }>;
   leadingStatements: readonly SourceStatementIR[];
   source: SourceExpressionIR;
@@ -6871,7 +6872,15 @@ function sourceAsyncLiveNamesAfterAwait(
   returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
 ): readonly string[] {
   const names: string[] = [];
+  const currentAssignmentTarget = steps[index]?.assignmentTargetName;
+  if (currentAssignmentTarget) {
+    names.push(currentAssignmentTarget);
+  }
   for (let nextIndex = index + 1; nextIndex < steps.length; nextIndex += 1) {
+    const assignmentTarget = steps[nextIndex]!.assignmentTargetName;
+    if (assignmentTarget) {
+      names.push(assignmentTarget);
+    }
     steps[nextIndex]!.leadingStatements.forEach((statement) =>
       collectSourceStatementIdentifierReads(statement, names)
     );
@@ -7028,15 +7037,18 @@ function pushAsyncAwaitFulfilledClosure(
     captures,
   );
   const body: SemanticStatementIR[] = [];
-  if (step.binding) {
-    const representation = step.representation;
-    if (!representation || !step.type) {
+  if (step.binding || step.assignmentTargetName) {
+    const targetName = step.assignmentTargetName;
+    const targetRepresentation = targetName
+      ? closureContext.localRepresentations.get(targetName)
+      : undefined;
+    const boxedValueType = targetName ? closureContext.boxedLocals.get(targetName) : undefined;
+    const representation = step.representation ??
+      (targetRepresentation === 'box_ref' ? boxedValueType : targetRepresentation);
+    if (!representation || (step.binding && !step.type)) {
       context.unsupportedKinds.add('async_await_value_type');
       return undefined;
     }
-    addLocal(closureContext, step.binding.name, representation);
-    closureContext.localDeclarationKinds.set(step.binding.name, 'const');
-    registerSemanticLocalMetadata(closureContext, step.binding.name, step.type);
     const awaitedValue = untagUnionExpressionForRepresentation(
       localGetExpression('promise_value', 'tagged_ref'),
       representation,
@@ -7046,7 +7058,26 @@ function pushAsyncAwaitFulfilledClosure(
       context.unsupportedKinds.add('async_await_value');
       return undefined;
     }
-    body.push({ kind: 'local_set', name: step.binding.name, value: awaitedValue });
+    if (step.binding) {
+      addLocal(closureContext, step.binding.name, representation);
+      closureContext.localDeclarationKinds.set(step.binding.name, 'const');
+      registerSemanticLocalMetadata(closureContext, step.binding.name, step.type!);
+      body.push({ kind: 'local_set', name: step.binding.name, value: awaitedValue });
+    } else {
+      if (targetName && targetRepresentation === 'box_ref' && boxedValueType === representation) {
+        body.push({
+          kind: 'box_set',
+          box: localGetExpression(targetName, 'box_ref'),
+          value: awaitedValue,
+          valueType: representation,
+        });
+      } else if (targetName && targetRepresentation === representation) {
+        body.push({ kind: 'local_set', name: targetName, value: awaitedValue });
+      } else {
+        context.unsupportedKinds.add(`async_await_assignment:${targetName}`);
+        return undefined;
+      }
+    }
   }
   const statementsBeforeNextAwait = index === steps.length - 1
     ? trailingStatements
@@ -7222,6 +7253,21 @@ function lowerAwaitAsyncFunctionBody(
       steps.push({
         leadingStatements: pendingLeadingStatements,
         source: statement.expression.expression,
+      });
+      pendingLeadingStatements = [];
+      continue;
+    }
+    if (
+      statement.kind === 'expression_statement' &&
+      statement.expression.kind === 'assignment_expression' &&
+      statement.expression.operator === '=' &&
+      statement.expression.left.kind === 'identifier' &&
+      statement.expression.right.kind === 'await_expression'
+    ) {
+      steps.push({
+        assignmentTargetName: statement.expression.left.name,
+        leadingStatements: pendingLeadingStatements,
+        source: statement.expression.right.expression,
       });
       pendingLeadingStatements = [];
       continue;

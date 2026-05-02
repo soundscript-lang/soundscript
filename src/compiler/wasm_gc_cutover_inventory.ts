@@ -132,10 +132,9 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
   {
     family: 'promises',
     status: 'ir-shadowed',
-    focusedGate:
-      'compileProject selects the source-hir wasm-gc plan for await expression statements',
+    focusedGate: 'compileProject selects the source-hir wasm-gc plan for awaited assignments',
     nextCutoverStep:
-      'Broaden SourceHIR async-await lowering into assignment/update statement shapes while keeping JSPI limited to host-promise boundaries.',
+      'Broaden SourceHIR async-await lowering into element/property assignment and structured statement shapes while keeping JSPI limited to host-promise boundaries.',
   },
   {
     family: 'generators',
