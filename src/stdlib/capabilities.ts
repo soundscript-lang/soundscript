@@ -135,6 +135,11 @@ function defaultManifest(): readonly CapabilityInfo[] {
       reason: node ? undefined : 'requires a node-family provider',
     },
     {
+      name: 'net.tls',
+      status: node ? 'available' : 'unavailable',
+      reason: node ? undefined : 'requires a node-family provider',
+    },
+    {
       name: 'http.server',
       status: node ? 'available' : 'unavailable',
       reason: node ? undefined : 'requires a node-family provider',
