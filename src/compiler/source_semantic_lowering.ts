@@ -6290,17 +6290,29 @@ function lowerStatement(
             context.unsupportedKinds.add(`unbound_assignment:${target}`);
             return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
           }
+          const boxedValueType = context.boxedLocals.get(target);
           const right = lowerExpression(assignment.right, context);
           const compoundOperator = compoundAssignmentBinaryOperator(assignment.operator);
           let value = right;
           if (compoundOperator) {
-            const left: SemanticExpressionIR = {
-              kind: 'local_get',
-              name: target,
-              representation: targetRepresentation,
-            };
+            const left: SemanticExpressionIR = targetRepresentation === 'box_ref' &&
+                boxedValueType
+              ? {
+                kind: 'box_get',
+                box: localGetExpression(target, 'box_ref'),
+                valueType: boxedValueType,
+                representation: boxedValueType,
+              }
+              : {
+                kind: 'local_get',
+                name: target,
+                representation: targetRepresentation,
+              };
             const binary = binaryOperatorForSource(compoundOperator, left, right);
-            if (!binary || binary.representation !== targetRepresentation) {
+            const expectedRepresentation = targetRepresentation === 'box_ref' && boxedValueType
+              ? boxedValueType
+              : targetRepresentation;
+            if (!binary || binary.representation !== expectedRepresentation) {
               context.unsupportedKinds.add(`compound_assignment:${assignment.operator}`);
               return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
             }
@@ -6354,6 +6366,18 @@ function lowerStatement(
             context.closureLocals.set(target, closureLocal);
           } else {
             context.closureLocals.delete(target);
+          }
+          if (targetRepresentation === 'box_ref' && boxedValueType) {
+            if (value.representation !== boxedValueType) {
+              context.unsupportedKinds.add(`boxed_assignment:${target}`);
+              return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
+            }
+            return [...statements, {
+              kind: 'box_set',
+              box: localGetExpression(target, 'box_ref'),
+              value,
+              valueType: boxedValueType,
+            }];
           }
           return [...statements, { kind: 'local_set', name: target, value }];
         }
@@ -8097,6 +8121,65 @@ function lowerConditionalAwaitAsyncFunctionBody(
   return undefined;
 }
 
+function sourceWhileStatementForAwaitLoop(
+  statement: SourceStatementIR,
+): {
+  leadingStatements: readonly SourceStatementIR[];
+  loopStatement: Extract<SourceStatementIR, { kind: 'while' }>;
+} | undefined {
+  if (statement.kind === 'while') {
+    if (sourceExpressionContainsAwaitExpression(statement.test)) {
+      return undefined;
+    }
+    return { leadingStatements: [], loopStatement: statement };
+  }
+  if (statement.kind !== 'for') {
+    return undefined;
+  }
+  if (
+    (statement.initializer
+      ? statement.initializer.kind === 'variable_declaration'
+        ? sourceStatementContainsAwaitExpression(statement.initializer)
+        : sourceExpressionContainsAwaitExpression(statement.initializer)
+      : false) ||
+    (statement.test ? sourceExpressionContainsAwaitExpression(statement.test) : false) ||
+    (statement.incrementor ? sourceExpressionContainsAwaitExpression(statement.incrementor) : false)
+  ) {
+    return undefined;
+  }
+  const leadingStatements: SourceStatementIR[] = [];
+  if (statement.initializer) {
+    leadingStatements.push(
+      statement.initializer.kind === 'variable_declaration' ? statement.initializer : {
+        kind: 'expression_statement',
+        expression: statement.initializer,
+        span: statement.initializer.span,
+      },
+    );
+  }
+  const incrementStatements: SourceStatementIR[] = statement.incrementor
+    ? [{
+      kind: 'expression_statement',
+      expression: statement.incrementor,
+      span: statement.incrementor.span,
+    }]
+    : [];
+  return {
+    leadingStatements,
+    loopStatement: {
+      kind: 'while',
+      test: statement.test ?? {
+        kind: 'literal',
+        literalKind: 'boolean',
+        text: 'true',
+        span: statement.span,
+      },
+      body: [...statement.body, ...incrementStatements],
+      span: statement.span,
+    },
+  };
+}
+
 function lowerLoopAwaitAsyncFunctionBody(
   func: SourceFunctionIR,
   context: FunctionLoweringContext,
@@ -8115,12 +8198,11 @@ function lowerLoopAwaitAsyncFunctionBody(
       leadingStatements = [...leadingStatements, statement];
       continue;
     }
-    if (
-      statement.kind !== 'while' ||
-      sourceExpressionContainsAwaitExpression(statement.test)
-    ) {
+    const normalizedLoop = sourceWhileStatementForAwaitLoop(statement);
+    if (!normalizedLoop) {
       return undefined;
     }
+    const loopStatement = normalizedLoop.loopStatement;
     const afterStatements = candidateStatements.slice(index + 1);
     if (
       afterStatements.some((afterStatement) =>
@@ -8129,7 +8211,10 @@ function lowerLoopAwaitAsyncFunctionBody(
     ) {
       return undefined;
     }
-    const loweredLeadingStatements = leadingStatements.flatMap((leadingStatement) => [
+    const loweredLeadingStatements = [
+      ...leadingStatements,
+      ...normalizedLoop.leadingStatements,
+    ].flatMap((leadingStatement) => [
       ...lowerStatement(leadingStatement, context),
     ]);
     const taggedValue = promiseReactionTaggedValueType();
@@ -8140,13 +8225,13 @@ function lowerLoopAwaitAsyncFunctionBody(
     );
     const captures = sourceAsyncCapturesForLiveNames(
       context,
-      sourceAsyncLoopLiveNames(statement, afterStatements, returnStatement),
+      sourceAsyncLoopLiveNames(loopStatement, afterStatements, returnStatement),
     );
     const loopStepFunctionId = pushAsyncWhileStepClosure(
       context,
       closureSignature.id,
       captures,
-      statement,
+      loopStatement,
       afterStatements,
       returnStatement,
     );
