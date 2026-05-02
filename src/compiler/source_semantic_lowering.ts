@@ -7371,6 +7371,120 @@ function pushAsyncAwaitFulfilledClosure(
   return closureFunctionId;
 }
 
+function appendSourceAwaitStepFromSequentialStatement(
+  statement: SourceStatementIR,
+  steps: SourceAwaitStep[],
+  pendingLeadingStatements: readonly SourceStatementIR[],
+  context: FunctionLoweringContext,
+): readonly SourceStatementIR[] | undefined {
+  if (statement.kind === 'block' && sourceStatementContainsAwaitExpression(statement)) {
+    let pending = pendingLeadingStatements;
+    for (const child of statement.statements) {
+      const nextPending = appendSourceAwaitStepFromSequentialStatement(
+        child,
+        steps,
+        pending,
+        context,
+      );
+      if (!nextPending) {
+        return undefined;
+      }
+      pending = nextPending;
+    }
+    return pending;
+  }
+  if (statement.kind === 'variable_declaration' && statement.declarations.length === 1) {
+    const [declaration] = statement.declarations;
+    if (
+      declaration &&
+      declaration.binding.kind === 'identifier_binding' &&
+      declaration.initializer?.kind === 'await_expression'
+    ) {
+      const awaitedType = localTypeForBinding(declaration.binding, context);
+      if (!awaitedType) {
+        context.unsupportedKinds.add('async_await_value_type');
+        return undefined;
+      }
+      steps.push({
+        binding: declaration.binding,
+        leadingStatements: pendingLeadingStatements,
+        source: declaration.initializer.expression,
+        type: awaitedType,
+        representation: representationForSemanticType(awaitedType),
+      });
+      return [];
+    }
+  }
+  if (
+    statement.kind === 'expression_statement' &&
+    statement.expression.kind === 'await_expression'
+  ) {
+    steps.push({
+      leadingStatements: pendingLeadingStatements,
+      source: statement.expression.expression,
+    });
+    return [];
+  }
+  if (
+    statement.kind === 'expression_statement' &&
+    statement.expression.kind === 'assignment_expression' &&
+    statement.expression.operator === '=' &&
+    statement.expression.left.kind === 'identifier' &&
+    statement.expression.right.kind === 'await_expression'
+  ) {
+    steps.push({
+      assignmentTarget: { kind: 'identifier', name: statement.expression.left.name },
+      leadingStatements: pendingLeadingStatements,
+      source: statement.expression.right.expression,
+    });
+    return [];
+  }
+  if (
+    statement.kind === 'expression_statement' &&
+    statement.expression.kind === 'assignment_expression' &&
+    statement.expression.operator === '=' &&
+    statement.expression.left.kind === 'element_access' &&
+    statement.expression.left.object.kind === 'identifier' &&
+    statement.expression.left.index &&
+    statement.expression.right.kind === 'await_expression'
+  ) {
+    steps.push({
+      assignmentTarget: {
+        kind: 'array_element',
+        objectName: statement.expression.left.object.name,
+        index: statement.expression.left.index,
+      },
+      leadingStatements: pendingLeadingStatements,
+      source: statement.expression.right.expression,
+    });
+    return [];
+  }
+  if (
+    statement.kind === 'expression_statement' &&
+    statement.expression.kind === 'assignment_expression' &&
+    statement.expression.operator === '=' &&
+    statement.expression.left.kind === 'property_access' &&
+    statement.expression.left.object.kind === 'identifier' &&
+    statement.expression.right.kind === 'await_expression'
+  ) {
+    steps.push({
+      assignmentTarget: {
+        kind: 'property',
+        objectName: statement.expression.left.object.name,
+        propertyName: statement.expression.left.property,
+        span: statement.expression.left.span,
+      },
+      leadingStatements: pendingLeadingStatements,
+      source: statement.expression.right.expression,
+    });
+    return [];
+  }
+  if (sourceStatementContainsAwaitExpression(statement)) {
+    return undefined;
+  }
+  return [...pendingLeadingStatements, statement];
+}
+
 function lowerAwaitAsyncFunctionBody(
   func: SourceFunctionIR,
   context: FunctionLoweringContext,
@@ -7383,107 +7497,19 @@ function lowerAwaitAsyncFunctionBody(
     return undefined;
   }
   const steps: SourceAwaitStep[] = [];
-  let pendingLeadingStatements: SourceStatementIR[] = [];
+  let pendingLeadingStatements: readonly SourceStatementIR[] = [];
   let continuationReturnStatement = returnStatement;
   for (const statement of func.body.slice(0, -1)) {
-    if (statement.kind === 'variable_declaration' && statement.declarations.length === 1) {
-      const [declaration] = statement.declarations;
-      if (
-        declaration &&
-        declaration.binding.kind === 'identifier_binding' &&
-        declaration.initializer?.kind === 'await_expression'
-      ) {
-        const awaitedType = localTypeForBinding(declaration.binding, context);
-        if (!awaitedType) {
-          context.unsupportedKinds.add('async_await_value_type');
-          return [
-            { kind: 'unsupported_statement', sourceKind: 'await_expression' },
-            { kind: 'trap' },
-          ];
-        }
-        steps.push({
-          binding: declaration.binding,
-          leadingStatements: pendingLeadingStatements,
-          source: declaration.initializer.expression,
-          type: awaitedType,
-          representation: representationForSemanticType(awaitedType),
-        });
-        pendingLeadingStatements = [];
-        continue;
-      }
-    }
-    if (
-      statement.kind === 'expression_statement' &&
-      statement.expression.kind === 'await_expression'
-    ) {
-      steps.push({
-        leadingStatements: pendingLeadingStatements,
-        source: statement.expression.expression,
-      });
-      pendingLeadingStatements = [];
-      continue;
-    }
-    if (
-      statement.kind === 'expression_statement' &&
-      statement.expression.kind === 'assignment_expression' &&
-      statement.expression.operator === '=' &&
-      statement.expression.left.kind === 'identifier' &&
-      statement.expression.right.kind === 'await_expression'
-    ) {
-      steps.push({
-        assignmentTarget: { kind: 'identifier', name: statement.expression.left.name },
-        leadingStatements: pendingLeadingStatements,
-        source: statement.expression.right.expression,
-      });
-      pendingLeadingStatements = [];
-      continue;
-    }
-    if (
-      statement.kind === 'expression_statement' &&
-      statement.expression.kind === 'assignment_expression' &&
-      statement.expression.operator === '=' &&
-      statement.expression.left.kind === 'element_access' &&
-      statement.expression.left.object.kind === 'identifier' &&
-      statement.expression.left.index &&
-      statement.expression.right.kind === 'await_expression'
-    ) {
-      steps.push({
-        assignmentTarget: {
-          kind: 'array_element',
-          objectName: statement.expression.left.object.name,
-          index: statement.expression.left.index,
-        },
-        leadingStatements: pendingLeadingStatements,
-        source: statement.expression.right.expression,
-      });
-      pendingLeadingStatements = [];
-      continue;
-    }
-    if (
-      statement.kind === 'expression_statement' &&
-      statement.expression.kind === 'assignment_expression' &&
-      statement.expression.operator === '=' &&
-      statement.expression.left.kind === 'property_access' &&
-      statement.expression.left.object.kind === 'identifier' &&
-      statement.expression.right.kind === 'await_expression'
-    ) {
-      steps.push({
-        assignmentTarget: {
-          kind: 'property',
-          objectName: statement.expression.left.object.name,
-          propertyName: statement.expression.left.property,
-          span: statement.expression.left.span,
-        },
-        leadingStatements: pendingLeadingStatements,
-        source: statement.expression.right.expression,
-      });
-      pendingLeadingStatements = [];
-      continue;
-    }
-    if (sourceStatementContainsAwaitExpression(statement)) {
+    const nextPending = appendSourceAwaitStepFromSequentialStatement(
+      statement,
+      steps,
+      pendingLeadingStatements,
+      context,
+    );
+    if (!nextPending) {
       return undefined;
     }
-    pendingLeadingStatements.push(statement);
+    pendingLeadingStatements = nextPending;
   }
   if (returnStatement.expression?.kind === 'await_expression') {
     const awaitedType = context.currentResultType.value;
