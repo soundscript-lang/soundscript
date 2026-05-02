@@ -131,6 +131,7 @@ interface SourceSemanticModuleLoweringState {
 
 interface FunctionLoweringContext {
   functionName: string;
+  sourceFunctionName: string;
   asyncFunction: boolean;
   currentResultType?: SemanticTypeIR;
   functionResultArrayLocals: Map<string, SourceSemanticArrayLocal>;
@@ -1885,7 +1886,7 @@ function localTypeForBinding(
   return context.localTypesByKey.get(
     localTypeKey(
       binding.span.fileName,
-      context.functionName,
+      context.sourceFunctionName,
       binding.name,
       binding.span.start,
       binding.span.end,
@@ -5309,6 +5310,7 @@ function lowerArrowFunctionExpression(
   const unsupportedKinds = new Set<string>();
   const closureContext: FunctionLoweringContext = {
     functionName: `closure_source_${parentContext.functionName}_${closureFunctionId}`,
+    sourceFunctionName: parentContext.sourceFunctionName,
     asyncFunction: false,
     currentResultType: signatureType.result,
     functionResultArrayLocals: parentContext.functionResultArrayLocals,
@@ -5322,7 +5324,7 @@ function lowerArrowFunctionExpression(
     closureLocals: new Map(),
     constructorLocals: new Map(),
     localDeclarationKinds,
-    localTypesByKey: new Map(),
+    localTypesByKey: parentContext.localTypesByKey,
     mapLocals: new Map(),
     moduleState: parentContext.moduleState,
     objectLayoutsByKey: parentContext.objectLayoutsByKey,
@@ -6831,6 +6833,7 @@ function createAsyncAwaitContinuationContext(
   ]);
   const context: FunctionLoweringContext = {
     functionName,
+    sourceFunctionName: parentContext.sourceFunctionName,
     asyncFunction: false,
     currentResultType: promiseReactionTaggedValueType(),
     functionResultArrayLocals: parentContext.functionResultArrayLocals,
@@ -6844,7 +6847,7 @@ function createAsyncAwaitContinuationContext(
     closureLocals: new Map(),
     constructorLocals: new Map(),
     localDeclarationKinds,
-    localTypesByKey: new Map(),
+    localTypesByKey: parentContext.localTypesByKey,
     mapLocals: new Map(),
     moduleState: parentContext.moduleState,
     objectLayoutsByKey: parentContext.objectLayoutsByKey,
@@ -7720,9 +7723,18 @@ function pushAsyncWhileAfterAwaitClosure(
   captures: readonly SourceAsyncCapture[],
   loopCaptures: readonly SourceAsyncCapture[],
   loopStepFunctionName: string,
-  step: SourceAwaitStep,
+  steps: readonly SourceAwaitStep[],
+  index: number,
   bodyTrailingStatements: readonly SourceStatementIR[],
+  loopStatement: Extract<SourceStatementIR, { kind: 'while' }>,
+  afterStatements: readonly SourceStatementIR[],
+  returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
 ): number | undefined {
+  const step = steps[index];
+  if (!step) {
+    context.unsupportedKinds.add('async_while_step');
+    return undefined;
+  }
   const closureFunctionId = context.moduleState.nextClosureFunctionId;
   context.moduleState.nextClosureFunctionId += 1;
   const closureContext = createAsyncAwaitContinuationContext(
@@ -7767,13 +7779,101 @@ function pushAsyncWhileAfterAwaitClosure(
       body.push(...assignmentStatements);
     }
   }
-  body.push(
-    ...bodyTrailingStatements.flatMap((
-      statement,
-    ) => [...lowerStatement(statement, closureContext)]),
-    { kind: 'expression', value: asyncLoopStepCallExpression(loopStepFunctionName, loopCaptures) },
-    { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
-  );
+  if (index === steps.length - 1) {
+    body.push(
+      ...bodyTrailingStatements.flatMap((
+        statement,
+      ) => [...lowerStatement(statement, closureContext)]),
+      {
+        kind: 'expression',
+        value: asyncLoopStepCallExpression(loopStepFunctionName, loopCaptures),
+      },
+      { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+    );
+  } else {
+    const nextStep = steps[index + 1]!;
+    body.push(
+      ...nextStep.leadingStatements.flatMap((statement) => [
+        ...lowerStatement(statement, closureContext),
+      ]),
+    );
+    const awaitedSource = lowerExpression(nextStep.source, closureContext);
+    const awaitedSourceStatements = takePendingStatements(closureContext);
+    if (awaitedSource.representation !== 'heap_ref') {
+      context.unsupportedKinds.add('async_while_await_source');
+      return undefined;
+    }
+    const nextCaptures = mergeSourceAsyncCaptures(
+      loopCaptures,
+      sourceAsyncCapturesForLiveNames(
+        closureContext,
+        sourceAsyncLiveNamesAfterAwait(
+          steps,
+          index + 1,
+          [...bodyTrailingStatements, loopStatement, ...afterStatements],
+          returnStatement,
+        ),
+      ),
+    );
+    const fulfilledFunctionId = pushAsyncWhileAfterAwaitClosure(
+      closureContext,
+      signatureId,
+      nextCaptures,
+      loopCaptures,
+      loopStepFunctionName,
+      steps,
+      index + 1,
+      bodyTrailingStatements,
+      loopStatement,
+      afterStatements,
+      returnStatement,
+    );
+    const rejectedFunctionId = pushPromiseRejectIntoClosure(closureContext, signatureId);
+    if (fulfilledFunctionId === undefined) {
+      context.unsupportedKinds.add('async_while_continuation');
+      return undefined;
+    }
+    const awaitedSourceName = nextTempLocalName(closureContext, 'async_while_source');
+    addLocal(closureContext, awaitedSourceName, 'heap_ref');
+    const captureValues = asyncAwaitContinuationCaptureValues(
+      nextCaptures,
+      localGetExpression('capture_target_0', 'box_ref'),
+      closureContext,
+    );
+    body.push(
+      ...awaitedSourceStatements,
+      { kind: 'local_set', name: awaitedSourceName, value: awaitedSource },
+      {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_THEN_HELPER_NAME,
+          args: [
+            localGetExpression(awaitedSourceName, 'heap_ref'),
+            {
+              kind: 'closure_literal',
+              functionId: fulfilledFunctionId,
+              signatureId,
+              captures: captureValues.map((capture) => capture.value),
+              captureValueTypes: captureValues.map((capture) => capture.valueType),
+              representation: 'closure_ref',
+            },
+            {
+              kind: 'closure_literal',
+              functionId: rejectedFunctionId,
+              signatureId,
+              captures: [localGetExpression('capture_target_0', 'box_ref')],
+              captureValueTypes: ['tagged_ref'],
+              representation: 'closure_ref',
+            },
+          ],
+          representation: 'heap_ref',
+        },
+      },
+      { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+    );
+    closureContext.runtimeFamilies.add('closure');
+  }
 
   const unsupportedBodyKinds = [...closureContext.unsupportedKinds].sort();
   context.moduleState.generatedFunctions.push({
@@ -7829,7 +7929,7 @@ function pushAsyncWhileStepClosure(
     statement.body,
     closureContext,
   );
-  if (!collected || collected.steps.length !== 1) {
+  if (!collected || collected.steps.length === 0) {
     context.unsupportedKinds.add('async_while_body');
     return undefined;
   }
@@ -7854,7 +7954,7 @@ function pushAsyncWhileStepClosure(
       sourceAsyncLiveNamesAfterAwait(
         collected.steps,
         0,
-        [statement, ...afterStatements],
+        [...collected.trailingStatements, statement, ...afterStatements],
         returnStatement,
       ),
     ),
@@ -7865,8 +7965,12 @@ function pushAsyncWhileStepClosure(
     afterCaptures,
     captures,
     functionName,
-    step,
+    collected.steps,
+    0,
     collected.trailingStatements,
+    statement,
+    afterStatements,
+    returnStatement,
   );
   const rejectedFunctionId = pushPromiseRejectIntoClosure(closureContext, signatureId);
   if (fulfilledFunctionId === undefined) {
@@ -8393,6 +8497,7 @@ function lowerFunction(
   );
   const context: FunctionLoweringContext = {
     functionName: func.name,
+    sourceFunctionName: func.name,
     asyncFunction: func.async,
     currentResultType: signature?.result,
     functionResultArrayLocals,
