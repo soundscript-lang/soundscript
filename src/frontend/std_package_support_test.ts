@@ -254,7 +254,9 @@ Deno.test('std package support projects generated Task object declarations', () 
     PROCESS_STDLIB_DECLARATION_TEXT,
     'export declare function onSignal(signal: SignalName, handler: () => void): Result<Disposable, Failure>;',
   );
+  assertStringIncludes(HTTP_STDLIB_DECLARATION_TEXT, 'export declare function server');
   assertStringIncludes(HTTP_STDLIB_DECLARATION_TEXT, 'export declare function serve');
+  assertStringIncludes(HTTP_STDLIB_DECLARATION_TEXT, 'export declare function serveNode');
   assertStringIncludes(NET_STDLIB_DECLARATION_TEXT, 'export declare function lookupHost');
 });
 
