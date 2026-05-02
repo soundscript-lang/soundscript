@@ -1188,34 +1188,60 @@ Legend:
 - `no`: not part of that target profile
 - `later`: intentionally deferred
 
-| Surface               | js-browser | js-node  | wasm-browser | wasm-node | wasm-wasi | native |
-| --------------------- | ---------- | -------- | ------------ | --------- | --------- | ------ |
-| core pure modules     | yes        | yes      | yes          | yes       | yes       | yes    |
-| capabilities query    | yes        | yes      | yes          | yes       | yes       | yes    |
-| path/bytes            | yes        | yes      | yes          | yes       | yes       | yes    |
-| Web URL/text          | yes        | yes      | yes          | yes       | provider  | yes    |
-| fetch/client HTTP     | yes        | yes      | provider     | provider  | provider  | yes    |
-| streams               | yes        | yes      | provider     | provider  | provider  | yes    |
-| console               | yes        | yes      | provider     | provider  | provider  | yes    |
-| crypto random/hash    | yes        | yes      | provider     | provider  | provider  | yes    |
-| time clocks/timers    | yes        | yes      | provider     | provider  | provider  | yes    |
-| TaskGroup/AsyncResult | yes        | yes      | yes          | yes       | yes       | yes    |
-| ThreadPool/Thread     | provider   | provider | provider     | provider  | provider  | yes    |
-| shared memory/atomics | provider   | yes      | provider     | yes       | provider  | yes    |
-| fs                    | no         | yes      | provider     | yes       | provider  | yes    |
-| env read              | no         | yes      | provider     | yes       | provider  | yes    |
-| env write             | no         | provider | no           | provider  | provider  | yes    |
-| cli stdio/args        | no         | yes      | no           | yes       | provider  | yes    |
-| process info/cwd      | no         | yes      | no           | yes       | provider  | yes    |
-| child process         | no         | yes      | no           | yes       | no        | yes    |
-| raw TCP/UDP           | no         | yes      | no           | yes       | provider  | yes    |
-| HTTP server           | no         | yes      | no           | yes       | provider  | yes    |
-| WebSocket             | yes        | provider | provider     | provider  | no        | later  |
-| WebTransport          | provider   | no       | provider     | no        | no        | later  |
-| raw `web:*`           | yes        | no       | yes          | no        | no        | no     |
-| raw `node:*`          | no         | yes      | no           | yes       | no        | no     |
-| raw `native:*`        | no         | no       | no           | no        | no        | yes    |
-| raw `extern:*`        | yes        | yes      | yes          | yes       | no        | later  |
+| Surface                | js-browser | js-node  | wasm-browser | wasm-node | wasm-wasi | native |
+| ---------------------- | ---------- | -------- | ------------ | --------- | --------- | ------ |
+| core pure modules      | yes        | yes      | yes          | yes       | yes       | yes    |
+| capabilities query     | yes        | yes      | yes          | yes       | yes       | yes    |
+| path/bytes             | yes        | yes      | yes          | yes       | yes       | yes    |
+| Web URL/text           | yes        | yes      | yes          | yes       | provider  | yes    |
+| fetch/client HTTP      | yes        | yes      | provider     | provider  | provider  | yes    |
+| streams                | yes        | yes      | provider     | provider  | provider  | yes    |
+| console                | yes        | yes      | provider     | provider  | provider  | yes    |
+| crypto random/hash     | yes        | yes      | provider     | provider  | provider  | yes    |
+| time clocks/timers     | yes        | yes      | provider     | provider  | provider  | yes    |
+| AsyncResult/Task       | yes        | yes      | yes          | yes       | yes       | yes    |
+| TaskGroup/AsyncContext | provider   | yes      | provider     | provider  | provider  | yes    |
+| ThreadPool/Thread      | provider   | provider | provider     | provider  | provider  | yes    |
+| shared memory/atomics  | provider   | yes      | provider     | yes       | provider  | yes    |
+| fs                     | no         | yes      | provider     | yes       | provider  | yes    |
+| env read               | no         | yes      | provider     | yes       | provider  | yes    |
+| env write              | no         | provider | no           | provider  | provider  | yes    |
+| cli stdio/args         | no         | yes      | no           | yes       | provider  | yes    |
+| process info/cwd       | no         | yes      | no           | yes       | provider  | yes    |
+| child process          | no         | yes      | no           | yes       | no        | yes    |
+| DNS/TCP/TLS            | no         | yes      | no           | yes       | provider  | yes    |
+| UDP                    | no         | later    | no           | later     | provider  | yes    |
+| HTTP server            | no         | yes      | no           | yes       | provider  | yes    |
+| WebSocket              | yes        | provider | provider     | provider  | no        | later  |
+| WebTransport           | provider   | no       | provider     | no        | no        | later  |
+| raw `web:*`            | yes        | no       | yes          | no        | no        | no     |
+| raw `node:*`           | no         | yes      | no           | yes       | no        | no     |
+| raw `native:*`         | no         | no       | no           | no        | no        | yes    |
+| raw `extern:*`         | yes        | yes      | yes          | yes       | no        | later  |
+
+## Current JS-First Implementation Snapshot
+
+The current implementation intentionally starts with JS targets and leaves Wasm provider work gated
+until the Wasm runtime/compiler path is ready.
+
+| Module/API                                                                    | js-browser today               | js-node today                                                                                                   |
+| ----------------------------------------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `sts:concurrency/task`                                                        | implemented                    | implemented                                                                                                     |
+| `sts:concurrency/runtime`                                                     | gated                          | `TaskGroup`, `TaskHandle`, `AsyncContext`, `Runtime`                                                            |
+| `sts:capabilities`, `sts:time`, `sts:console`, `sts:path`, `sts:bytes`        | implemented                    | implemented                                                                                                     |
+| `sts:url`, `sts:fetch`, `sts:streams`, `sts:text`, `sts:random`               | implemented                    | implemented                                                                                                     |
+| `sts:fs`                                                                      | gated                          | file read/write, stat/lstat, directories, copy/rename/remove, real path                                         |
+| `sts:env`                                                                     | gated                          | read, require, set, remove, record snapshot                                                                     |
+| `sts:cli`                                                                     | gated                          | args, stdio metadata, terminal checks, terminal size                                                            |
+| `sts:process`                                                                 | gated                          | process info/cwd/platform/uptime/signals/exit code and child process spawn/output                               |
+| `sts:http`                                                                    | gated                          | Web `Request`/`Response` server, ready `listen`, run-until-closed `serve`, low-level Node handler compatibility |
+| `sts:net`                                                                     | gated                          | DNS lookup, TCP connect/listen, TLS connect/listen                                                              |
+| `sts:concurrency/parallel`, `sts:concurrency/sync`, `sts:concurrency/atomics` | gated/unsupported placeholders | gated/unsupported placeholders                                                                                  |
+
+Browser code should continue to use Web-platform APIs for browser-native capabilities. `sts:fetch`
+is the portable HTTP client surface; `WebSocket` and WebTransport remain Web-platform APIs until a
+future `sts:transport` abstraction is justified. `sts:net` is deliberately raw DNS/TCP/TLS and is
+not a browser networking facade.
 
 ## Implementation Slices
 
@@ -1252,8 +1278,8 @@ Legend:
 ### Slice 5: Networking
 
 - Stabilize `sts:http` server shape.
-- Add `sts:net` TCP/DNS first.
-- Add UDP and TLS after stream/resource semantics settle.
+- Add `sts:net` DNS/TCP/TLS first.
+- Add UDP after stream/resource semantics settle.
 - Keep WebSocket/WebTransport as Web-platform/provider surfaces until `sts:transport` is justified.
 
 ### Slice 6: Low-Level Parallelism
