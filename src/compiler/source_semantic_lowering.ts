@@ -9508,9 +9508,7 @@ function lowerTryFinallyAwaitAsyncFunctionBody(
           : undefined;
         const effectiveReturn = finallyReturnStatement || tryReturnStatement;
         if (!effectiveReturn) return undefined;
-        const tryLeading = tryReturnStatement
-          ? tryBlockArr.slice(0, tryLastIdx)
-          : tryBlockArr;
+        const tryLeading = tryReturnStatement ? tryBlockArr.slice(0, tryLastIdx) : tryBlockArr;
         const finallyLeading = finallyReturnStatement
           ? finallyBlockArr.slice(0, finallyLastIdx)
           : finallyBlockArr;
@@ -9553,32 +9551,36 @@ function lowerTryFinallyAwaitAsyncFunctionBody(
       leadingStatements = [...leadingStatements, statement];
       continue;
     }
-      const finallyBlockRaw = (statement as { finallyBlock?: readonly SourceStatementIR[] }).finallyBlock;
-      const finallyReturnIndex = finallyBlockRaw ? finallyBlockRaw.length - 1 : -1;
-      const finallyReturnCandidate = finallyReturnIndex >= 0 && finallyBlockRaw
-        ? finallyBlockRaw[finallyReturnIndex]
-        : undefined;
-      const finallyReturnStatement = finallyReturnCandidate?.kind === 'return'
-        ? finallyReturnCandidate as Extract<SourceStatementIR, { kind: 'return' }>
-        : undefined;
-      const finallyThrowCandidate = finallyReturnIndex >= 0 && finallyBlockRaw
-        ? finallyBlockRaw[finallyReturnIndex]
-        : undefined;
-      const finallyThrowStatement = !finallyReturnStatement && finallyThrowCandidate?.kind === 'throw'
-        ? finallyThrowCandidate as Extract<SourceStatementIR, { kind: 'throw' }>
-        : undefined;
-      const finallyLeadingStatements = (finallyReturnStatement || finallyThrowStatement) && finallyBlockRaw
-        ? finallyBlockRaw.slice(0, finallyReturnIndex)
-        : finallyBlockRaw ?? [];
-      const finallyHasControlTransfer = (finallyReturnStatement || finallyThrowStatement)
-        ? sourceStatementsContainControlTransfer(finallyLeadingStatements)
-        : sourceStatementsContainControlTransfer(finallyBlockRaw ?? []);
+    if (statement.kind !== 'try') {
+      return undefined;
+    }
+    const finallyBlock = statement.finallyBlock;
+    const finallyReturnIndex = finallyBlock ? finallyBlock.length - 1 : -1;
+    const finallyReturnCandidate = finallyReturnIndex >= 0 && finallyBlock
+      ? finallyBlock[finallyReturnIndex]
+      : undefined;
+    const finallyReturnStatement = finallyReturnCandidate?.kind === 'return'
+      ? finallyReturnCandidate as Extract<SourceStatementIR, { kind: 'return' }>
+      : undefined;
+    const finallyThrowCandidate = finallyReturnIndex >= 0 && finallyBlock
+      ? finallyBlock[finallyReturnIndex]
+      : undefined;
+    const finallyThrowStatement = !finallyReturnStatement && finallyThrowCandidate?.kind === 'throw'
+      ? finallyThrowCandidate as Extract<SourceStatementIR, { kind: 'throw' }>
+      : undefined;
+    const finallyLeadingStatements =
+      (finallyReturnStatement || finallyThrowStatement) && finallyBlock
+        ? finallyBlock.slice(0, finallyReturnIndex)
+        : finallyBlock ?? [];
+    const finallyHasControlTransfer = (finallyReturnStatement || finallyThrowStatement)
+      ? sourceStatementsContainControlTransfer(finallyLeadingStatements)
+      : sourceStatementsContainControlTransfer(finallyBlock ?? []);
+    const hasCatch = statement.catchBlock !== undefined || statement.catchBinding !== undefined;
+    const hasMissingOrAwaitingFinally = finallyBlock === undefined ||
+      finallyBlock.some((child) => sourceStatementContainsAwaitExpression(child));
     if (
-      statement.kind !== 'try' ||
-      statement.catchBlock ||
-      statement.catchBinding ||
-      statement.finallyBlock === undefined ||
-      statement.finallyBlock.some((child) => sourceStatementContainsAwaitExpression(child)) ||
+      hasCatch ||
+      hasMissingOrAwaitingFinally ||
       sourceStatementsContainControlTransfer(statement.tryBlock) ||
       finallyHasControlTransfer
     ) {
@@ -9592,11 +9594,7 @@ function lowerTryFinallyAwaitAsyncFunctionBody(
         : statement.tryBlock;
       const tryHasOnlyTerminalReturn = tryReturnStatement !== undefined &&
         !sourceStatementsContainControlTransfer(tryLeadingStatements);
-      const failsFastChecks = statement.kind !== 'try' ||
-        statement.catchBlock ||
-        statement.catchBinding ||
-        statement.finallyBlock === undefined ||
-        statement.finallyBlock.some((child) => sourceStatementContainsAwaitExpression(child));
+      const failsFastChecks = hasCatch || hasMissingOrAwaitingFinally;
       if (failsFastChecks || !tryHasOnlyTerminalReturn || finallyHasControlTransfer) {
         return undefined;
       }
@@ -9693,7 +9691,9 @@ function catchBlockTerminalReturn(
   const lastIndex = catchBlock.length - 1;
   if (lastIndex < 0) return undefined;
   const last = catchBlock[lastIndex];
-  return last?.kind === 'return' ? last as Extract<SourceStatementIR, { kind: 'return' }> : undefined;
+  return last?.kind === 'return'
+    ? last as Extract<SourceStatementIR, { kind: 'return' }>
+    : undefined;
 }
 
 function catchBlockTerminalThrow(
@@ -9723,30 +9723,28 @@ function lowerTryCatchAwaitAsyncFunctionBody(
       leadingStatements = [...leadingStatements, statement];
       continue;
     }
-    const catchReturnStatement = statement.catchBlock
-      ? catchBlockTerminalReturn(statement.catchBlock)
-      : undefined;
-    const catchThrowStatement = statement.catchBlock
-      ? catchBlockTerminalThrow(statement.catchBlock)
-      : undefined;
+    if (statement.kind !== 'try' || !statement.catchBlock) {
+      return undefined;
+    }
+    const catchBlock = statement.catchBlock;
+    const catchReturnStatement = catchBlockTerminalReturn(catchBlock);
+    const catchThrowStatement = catchBlockTerminalThrow(catchBlock);
     const catchLeadingStatements = catchReturnStatement
-      ? statement.catchBlock.filter((s) => s !== catchReturnStatement)
+      ? catchBlock.filter((statement) => statement !== catchReturnStatement)
       : catchThrowStatement
-      ? statement.catchBlock.filter((s) => s !== catchThrowStatement)
-      : statement.catchBlock;
+      ? catchBlock.filter((statement) => statement !== catchThrowStatement)
+      : catchBlock;
     const catchHasControlTransfer = (catchReturnStatement || catchThrowStatement)
       ? sourceStatementsContainControlTransfer(catchLeadingStatements)
-      : sourceStatementsContainControlTransfer((statement as any).catchBlock || []);
+      : sourceStatementsContainControlTransfer(catchBlock);
     if (
-      statement.kind !== 'try' ||
-      !statement.catchBlock ||
-      statement.catchBlock.some((child) => sourceStatementContainsAwaitExpression(child)) ||
+      catchBlock.some((child) => sourceStatementContainsAwaitExpression(child)) ||
       sourceStatementsContainControlTransfer(statement.tryBlock) ||
       catchHasControlTransfer
     ) {
       return undefined;
     }
-    const finallyBlock = (statement as any).finallyBlock as readonly SourceStatementIR[] | undefined;
+    const finallyBlock = statement.finallyBlock;
     if (finallyBlock && sourceStatementsContainControlTransfer(finallyBlock)) {
       return undefined;
     }
@@ -9788,7 +9786,7 @@ function lowerTryCatchAwaitAsyncFunctionBody(
         rejectionCatch: {
           afterStatements,
           catchBinding: statement.catchBinding,
-          catchBlock: statement.catchBlock,
+          catchBlock,
           returnStatement,
           catchReturnStatement,
           catchThrowStatement,
