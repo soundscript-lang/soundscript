@@ -63,8 +63,8 @@ The stable `sts:*` surface stays focused and composable.
 - `sts:capabilities`, `sts:time`, `sts:console`, `sts:streams`, `sts:path`, and `sts:bytes` are
   JS-neutral portable support modules. `sts:bytes` is the shared low-level byte surface for
   zero-copy views, explicit copies, shared-buffer detection, and host-boundary buffer conversion.
-  `sts:capabilities` reports narrow audit names such as `time.timer`, `fs.read`, `process.spawn`,
-  `net.tcp`, and `http.server`, with coarse module aliases kept for ergonomics.
+  `sts:capabilities` reports narrow audit names such as `url.parse`, `time.timer`, `fs.read`,
+  `process.spawn`, `net.tcp`, and `http.server`, with coarse module aliases kept for ergonomics.
 - `sts:fs`, `sts:env`, `sts:cli`, `sts:process`, `sts:http`, and `sts:net` are initial js-node
   provider modules and are capability-gated away from browser/Wasm targets. `sts:http` exposes Web
   `Request` / `Response` handlers, not raw Node handler types. `sts:net/dns`, `sts:net/tcp`, and

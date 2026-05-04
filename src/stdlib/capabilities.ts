@@ -62,6 +62,9 @@ function defaultManifest(): readonly CapabilityInfo[] {
 
   return [
     capability('platform.url', hasUrl, 'URL globals are not available'),
+    capability('url', hasUrl, 'URL globals are not available'),
+    capability('url.parse', hasUrl, 'URL globals are not available'),
+    unavailable('url.filePath', 'file URL path conversion requires a target path provider'),
     available('platform.console'),
     capability('platform.fetch', hasFetch, 'global fetch is not available'),
     capability('platform.streams', hasStreams, 'Web Streams globals are not available'),

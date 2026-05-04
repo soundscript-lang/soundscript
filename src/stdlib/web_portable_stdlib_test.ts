@@ -4,7 +4,7 @@ import { decodeUtf8, encodeUtf8 } from './text.ts';
 import { fromBytes, readAllBytes, readAllText, writeAllBytes } from './streams.ts';
 import { Bytes } from './bytes.ts';
 import { readBytes, readJson, readText, request } from './fetch.ts';
-import { hasCapability } from './capabilities.ts';
+import { get, hasCapability } from './capabilities.ts';
 import { fillRandom, randomBytes, uuidV4 } from './random.ts';
 import { format, parse, posix, relative, windows } from './path.ts';
 import { canParseUrl, fileUrlToPath, parseUrl, pathToFileUrl, URL } from './url.ts';
@@ -143,6 +143,9 @@ Deno.test('path helpers expose posix and windows APIs', () => {
 });
 
 Deno.test('capabilities expose web platform style names', () => {
+  assertEquals(hasCapability('url'), true);
+  assertEquals(hasCapability('url.parse'), true);
+  assertEquals(get('url.filePath')?.status, 'unavailable');
   assertEquals(hasCapability('platform.console'), true);
   assertEquals(hasCapability('platform.streams'), true);
   assertEquals(hasCapability('platform.text'), true);
