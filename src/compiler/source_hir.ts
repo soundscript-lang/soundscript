@@ -322,6 +322,7 @@ export type SourceExpressionIR =
     span: SourceSpanIR;
   }
   | { kind: 'await_expression'; expression: SourceExpressionIR; span: SourceSpanIR }
+  | { kind: 'yield_expression'; expression?: SourceExpressionIR; span: SourceSpanIR }
   | { kind: 'array_literal'; elements: readonly SourceExpressionIR[]; span: SourceSpanIR }
   | {
     kind: 'object_literal';
@@ -737,6 +738,16 @@ function lowerExpression(
     return {
       kind: 'await_expression',
       expression: lowerExpression(sourceFile, expression.expression),
+      span: spanOf(sourceFile, expression),
+    };
+  }
+
+  if (ts.isYieldExpression(expression)) {
+    return {
+      kind: 'yield_expression',
+      expression: expression.expression
+        ? lowerExpression(sourceFile, expression.expression)
+        : undefined,
       span: spanOf(sourceFile, expression),
     };
   }

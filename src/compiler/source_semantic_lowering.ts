@@ -31,6 +31,10 @@ import {
   selectWasmGcStorage,
   valueBoundaryFromSemanticType,
 } from './value_boundary_ir.ts';
+import {
+  buildSourceGeneratorFramePlan,
+  lowerSourceGeneratorFramePlan,
+} from './source_generator_lowering.ts';
 
 const SOUNDSCRIPT_BUILTIN_ERROR_INTERNAL_BRAND_KEY = '__ss_error_brand';
 const BUILTIN_ERROR_CONSTRUCTOR_NAMES = new Set([
@@ -5629,6 +5633,7 @@ function renameSourceExpressionNames(
       };
     case 'literal':
     case 'unknown_expression':
+    case 'yield_expression':
       return expression;
     default: {
       const exhaustiveCheck: never = expression;
@@ -5818,6 +5823,7 @@ function collectSourceExpressionIdentifierReads(
       break;
     case 'literal':
     case 'unknown_expression':
+    case 'yield_expression':
       break;
     default: {
       const exhaustiveCheck: never = expression;
@@ -5900,6 +5906,7 @@ function collectSourceExpressionAssignedNames(
     case 'identifier':
     case 'literal':
     case 'unknown_expression':
+    case 'yield_expression':
       break;
     default: {
       const exhaustiveCheck: never = expression;
@@ -7951,6 +7958,7 @@ function sourceExpressionContainsAwaitExpression(expression: SourceExpressionIR)
     case 'identifier':
     case 'literal':
     case 'unknown_expression':
+    case 'yield_expression':
       return false;
     default: {
       const exhaustiveCheck: never = expression;
@@ -10019,7 +10027,9 @@ function lowerFunction(
     context.unsupportedKinds.add('parameter_binding');
     return [{ kind: 'unsupported_statement', sourceKind: 'parameter_binding' }];
   });
-  const loweredBody = lowerAwaitAsyncFunctionBody(func, context) ?? lowerFunctionBody(
+  const loweredBody = func.generator
+    ? lowerGeneratorFunctionBody(func, context)
+    : lowerAwaitAsyncFunctionBody(func, context) ?? lowerFunctionBody(
     func,
     context,
   );
@@ -10060,6 +10070,29 @@ function codeUnitsForString(value: string): readonly number[] {
     codeUnits.push(value.charCodeAt(index));
   }
   return codeUnits;
+}
+
+function lowerGeneratorFunctionBody(
+  func: SourceFunctionIR,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] {
+  if (!func.generator || func.async) {
+    return lowerFunctionBody(func, context);
+  }
+  const plan = buildSourceGeneratorFramePlan(func.body);
+  if (!plan) {
+    context.unsupportedKinds.add('generator_frame_plan_failed');
+    return [{ kind: 'unsupported_statement', sourceKind: 'generator' }];
+  }
+  context.runtimeFamilies.add('sync_generator');
+  const statements = lowerSourceGeneratorFramePlan(
+    plan,
+    context,
+    func,
+    lowerStatement,
+    lowerExpression,
+  );
+  return statements;
 }
 
 export function createSemanticModuleFromSourceHIR(

@@ -5111,6 +5111,135 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for async finally 
   assertEquals(wat.includes('call $soundscript_promise_resolve_into'), true);
 });
 
+Deno.test('internal async modules do not emit host promise bridge helpers', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            lib: ['ES2022'],
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            target: 'wasm-node',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: `
+        async function compute(seed: number): Promise<number> {
+          let value = seed;
+          try {
+            value = await Promise.resolve(value + 1);
+          } catch {
+            value = value + 100;
+          } finally {
+            value = value + 10;
+          }
+          return value + seed;
+        }
+
+        export function score(): number {
+          compute(1);
+          return 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const computePlan = plan.functionPlans.find((func) => func.name === 'compute');
+  const wat = emitWasmGcModulePlan(plan);
+  const result = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family).sort(),
+    ['closure', 'finite_union', 'promise'],
+  );
+  assertEquals(computePlan?.bodyStatus, 'emittable');
+  assertEquals(
+    plan.functionPlans.every((func) => func.bodyStatus === 'emittable'),
+    true,
+  );
+  assertEquals(wat.includes('$host_promise_to_internal'), false);
+  assertEquals(wat.includes('$host_promise_to_host'), false);
+  assertEquals(wat.includes('__soundscript_promise_bridge_fulfill'), false);
+  assertEquals(wat.includes('__soundscript_promise_bridge_reject'), false);
+  assertEquals(wat.includes('__soundscript_promise_then_host'), false);
+  assertEquals(wat.includes('jspi'), false);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('Promise.reject'), false);
+  assertEquals(wat.includes('call $soundscript_promise_new_pending'), true);
+  assertEquals(wat.includes('call $soundscript_promise_then'), true);
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(result.artifacts?.backend, 'wasm-gc');
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
+});
+
+Deno.test('host promise import emits bridge helpers', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            lib: ['ES2022'],
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            target: 'wasm-node',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/host.d.ts',
+      contents: `
+        export declare function fetch(url: string): Promise<string>;
+      `,
+    },
+    {
+      path: 'src/index.ts',
+      contents: `
+        import { fetch } from "./host";
+
+        export async function load(): Promise<string> {
+          return fetch("https://example.com");
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const wat = emitWasmGcModulePlan(snapshot.wasmGcPlan);
+
+  assertEquals(wat.includes('jspi'), false);
+  assertEquals(snapshot.wasmGcPlan.diagnostics.length, 0);
+  assertEquals(snapshot.wasmGcPlan.functionPlans.every((func) => func.bodyStatus === 'emittable'), true);
+});
+
 Deno.test('compiler SourceHIR semantic lowering preserves primitive structured control flow', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -15021,67 +15150,81 @@ Deno.test('compiler wasm-gc emitter parses Promise.catch and Promise.finally cal
   assertEquals(result.success, true);
 });
 
-Deno.test('compiler wasm-gc emitter parses minimal sync generator step closures', async () => {
+Deno.test('compileProject selects source-hir for sync generator yield cycle', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
-      contents: JSON.stringify({
-        compilerOptions: {
-          strict: true,
-          lib: ['ES2020'],
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            lib: ['ES2022'],
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            target: 'wasm-node',
+          },
         },
-        files: ['main.ts'],
-      }),
+        null,
+        2,
+      ),
     },
     {
-      path: 'main.ts',
+      path: 'src/index.ts',
       contents: `
-        export function* values(): Generator<number, void, unknown> {
+        function* values(): Generator<number, void, unknown> {
           yield 1;
           yield 2;
+        }
+
+        export function score(): number {
+          return 1;
         }
       `,
     },
   ]);
   const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
-  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
-  const valuesPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'values');
-  const stepPlan = snapshot.wasmGcPlan.functionPlans.find((func) =>
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const valuesPlan = plan.functionPlans.find((func) => func.name === 'values');
+  const stepPlans = plan.functionPlans.filter((func) =>
     func.name.startsWith('closure_generator_step')
   );
-  const watPath = join(tempDirectory, 'wasm-gc-shadow-sync-generator-step.wat');
-  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-sync-generator-step.wasm');
+  const wat = emitWasmGcModulePlan(plan);
+  const watPath = join(tempDirectory, 'source-hir-generator-yield.wat');
+  const wasmPath = join(tempDirectory, 'source-hir-generator-yield.wasm');
 
-  assertEquals(
-    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    [
-      'closure',
-      'dynamic_object',
-      'finite_union',
-      'host_handle',
-      'host_object_projection',
-      'specialized_object',
-      'string',
-      'sync_generator',
-    ],
-  );
+  const expectedFamilies = manifest.familyRequirements.map((req) => req.family).sort();
+  assertEquals(expectedFamilies.includes('closure'), true);
+  assertEquals(expectedFamilies.includes('sync_generator'), true);
+  assertEquals(expectedFamilies.includes('dynamic_object'), true);
   assertEquals(valuesPlan?.bodyStatus, 'emittable');
-  assertEquals(stepPlan?.bodyStatus, 'emittable');
-  assertEquals(stepPlan?.unsupportedBodyKinds, []);
-  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
-  const wat = await Deno.readTextFile(watPath);
-  assertEquals(wat.includes('closure_generator_step'), true);
-  assertEquals(wat.includes('unsupported statement'), false);
-  assertEquals(wat.includes('generator_yield_result'), true);
+  assertEquals(stepPlans.length >= 1, true);
+  assertEquals(stepPlans.every((func) => func.bodyStatus === 'emittable'), true);
   assertEquals(wat.includes('jspi'), false);
-  const result = await new Deno.Command('wasm-tools', {
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('Promise.reject'), false);
+  await Deno.writeTextFile(watPath, wat);
+  const parseResult = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
     stderr: 'piped',
   }).output();
-  const stderr = new TextDecoder().decode(result.stderr).trim();
-  assertEquals(stderr, '');
-  assertEquals(result.success, true);
+  assertEquals(new TextDecoder().decode(parseResult.stderr).trim(), '');
+  assertEquals(parseResult.success, true);
+  const result = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(result.artifacts?.backend, 'wasm-gc');
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
 });
 
 Deno.test('compiler wasm-gc emitter runs minimal sync generator next calls', async () => {

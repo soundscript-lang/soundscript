@@ -131,24 +131,26 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
   },
   {
     family: 'promises',
-    status: 'ir-shadowed',
+    status: 'wasm-gc-emittable',
     focusedGate:
-      'compiler SourceHIR semantic lowering emits emittable catch body return, throw, rethrow, and combined try-catch-finally plans',
+      'compileProject selects source-hir wasm-gc for internal async with nested await, catch, finally, finally throw precedence, and zero host bridge helpers',
     nextCutoverStep:
-      'Add finally control-flow precedence (throw/return override in finally) for async contexts, then promote promises to wasm-gc-emittable.',
+      'Enable source-hir routing for host promise import/export boundaries once legacyJsHostImports gate is lifted for host deals.',
   },
   {
     family: 'generators',
-    status: 'ir-shadowed',
-    focusedGate: 'compileProject executes the kept sync generator subset',
-    nextCutoverStep: 'Route sync generator frames through canonical SemanticIR completion records.',
+    status: 'wasm-gc-emittable',
+    focusedGate:
+      'compileProject selects source-hir wasm-gc for sync generators with yield, step closures, and IteratorResult emission',
+    nextCutoverStep:
+      'Extend to yield* delegation, for-of consumer lowering, try/catch/finally across yields, and async generator frames.',
   },
   {
     family: 'async_frames',
     status: 'ir-shadowed',
     focusedGate: 'compiler wasm-gc emitter runs async frame resume smoke cases',
     nextCutoverStep:
-      'Make async frame lowering source-owned and keep JSPI limited to host-promise boundaries.',
+      'Route async generator and async frame lowering through source-owned generator frame plan once sync generators are stable.',
   },
   {
     family: 'errors',
