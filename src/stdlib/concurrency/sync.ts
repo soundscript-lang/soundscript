@@ -8,6 +8,12 @@ export interface LockOptions {
 
 type Release = () => void;
 
+interface SemaphoreWaiter {
+  readonly resolve: (result: Awaited<AsyncResult<Release, CancellationFailure>>) => void;
+  readonly signal?: AbortSignal;
+  readonly onAbort?: () => void;
+}
+
 function cancelled(signal: AbortSignal): CancellationFailure {
   return signal.reason instanceof CancellationFailure
     ? signal.reason
@@ -26,7 +32,7 @@ export class Mutex {
 
     if (!this.#locked) {
       this.#locked = true;
-      return Promise.resolve(ok(() => this.#release()));
+      return Promise.resolve(ok(this.#createRelease()));
     }
 
     return new Promise((resolve) => {
@@ -67,41 +73,98 @@ export class Mutex {
   #release(): void {
     const next = this.#waiters.shift();
     if (next) {
-      next(() => this.#release());
+      next(this.#createRelease());
       return;
     }
     this.#locked = false;
+  }
+
+  #createRelease(): Release {
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      this.#release();
+    };
   }
 }
 
 export class Semaphore {
   #available: number;
-  #mutex = new Mutex();
+  #waiters: SemaphoreWaiter[] = [];
 
   constructor(permits: number) {
     this.#available = permits;
   }
 
-  async acquire(options: LockOptions = {}): AsyncResult<Release, CancellationFailure> {
+  acquire(options: LockOptions = {}): AsyncResult<Release, CancellationFailure> {
+    const signal = options.signal;
+    if (signal?.aborted) {
+      return Promise.resolve(err(cancelled(signal)));
+    }
+
+    if (this.#available > 0) {
+      this.#available -= 1;
+      return Promise.resolve(ok(this.#createRelease()));
+    }
+
+    return new Promise((resolve) => {
+      const waiter: SemaphoreWaiter = {
+        resolve,
+        signal,
+        onAbort: signal
+          ? () => {
+            this.#removeWaiter(waiter);
+            resolve(err(cancelled(signal)));
+          }
+          : undefined,
+      };
+
+      this.#waiters.push(waiter);
+      if (signal && waiter.onAbort) {
+        signal.addEventListener('abort', waiter.onAbort, { once: true });
+      }
+    });
+  }
+
+  #release(): void {
     while (true) {
-      const result = await this.#mutex.with(() => {
-        if (this.#available <= 0) {
-          return undefined;
-        }
-        this.#available -= 1;
-        return () => {
-          this.#available += 1;
-        };
-      }, options);
-
-      if (result.tag === 'err') {
-        return result;
-      }
-      if (result.value) {
-        return ok(result.value);
+      const next = this.#waiters.shift();
+      if (!next) {
+        this.#available += 1;
+        return;
       }
 
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (next.signal && next.onAbort) {
+        next.signal.removeEventListener('abort', next.onAbort);
+      }
+      if (next.signal?.aborted) {
+        next.resolve(err(cancelled(next.signal)));
+        continue;
+      }
+
+      next.resolve(ok(this.#createRelease()));
+      return;
+    }
+  }
+
+  #createRelease(): Release {
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      this.#release();
+    };
+  }
+
+  #removeWaiter(waiter: SemaphoreWaiter): void {
+    const index = this.#waiters.indexOf(waiter);
+    if (index >= 0) {
+      this.#waiters.splice(index, 1);
     }
   }
 }
