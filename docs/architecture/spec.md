@@ -437,8 +437,8 @@ environment. Packages without usable source metadata are foreign dependencies an
 
 The standard library should prefer Web-standard platform APIs wherever the semantics are honest.
 Portable globals and leaf modules are both part of the intended contract. The repo already ships
-`sts:url`, `sts:fetch`, `sts:streams`, `sts:text`, and `sts:random` as the initial broader platform
-surface:
+`sts:url`, `sts:fetch`, `sts:streams`, `sts:text`, `sts:random`, and `sts:crypto` as the initial
+broader platform surface:
 
 - globals and leaf modules:
   - `URL`, `URLSearchParams` and `sts:url`
@@ -446,6 +446,7 @@ surface:
   - `ReadableStream`, `WritableStream`, `TransformStream` and `sts:streams`
   - `TextEncoder`, `TextDecoder` and `sts:text`
   - `crypto.getRandomValues` and `sts:random`
+  - `crypto.subtle` digest/HMAC helpers and `sts:crypto`
 
 These portable globals are intended on all five targets, including `wasm-wasi`, when backed honestly
 by direct host support, JS glue, or WASI/component imports.
@@ -455,6 +456,9 @@ Non-portable host access belongs in explicit capability modules:
 - `sts:fs`
 - `sts:env`
 - `sts:cli`
+- `sts:process`
+- `sts:http`
+- `sts:net`, `sts:net/dns`, `sts:net/tcp`, and `sts:net/tls`
 
 These capability modules are part of the intended target-aware platform contract. They are not yet a
 complete shipped surface.

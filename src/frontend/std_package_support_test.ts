@@ -58,9 +58,18 @@ import {
   JSON_STDLIB_MODULE_SPECIFIER,
   MATCH_STDLIB_DECLARATION_FILE,
   MATCH_STDLIB_MODULE_SPECIFIER,
+  NET_DNS_STDLIB_DECLARATION_FILE,
+  NET_DNS_STDLIB_DECLARATION_TEXT,
+  NET_DNS_STDLIB_MODULE_SPECIFIER,
   NET_STDLIB_DECLARATION_FILE,
   NET_STDLIB_DECLARATION_TEXT,
   NET_STDLIB_MODULE_SPECIFIER,
+  NET_TCP_STDLIB_DECLARATION_FILE,
+  NET_TCP_STDLIB_DECLARATION_TEXT,
+  NET_TCP_STDLIB_MODULE_SPECIFIER,
+  NET_TLS_STDLIB_DECLARATION_FILE,
+  NET_TLS_STDLIB_DECLARATION_TEXT,
+  NET_TLS_STDLIB_MODULE_SPECIFIER,
   NUMERICS_STDLIB_DECLARATION_FILE,
   NUMERICS_STDLIB_MODULE_SPECIFIER,
   PATH_STDLIB_DECLARATION_FILE,
@@ -126,6 +135,9 @@ Deno.test('std package support resolves root and stdlib leaf specifiers to virtu
     processResolved,
     httpResolved,
     netResolved,
+    netDnsResolved,
+    netTcpResolved,
+    netTlsResolved,
     numericsResolved,
   ] = host
     .resolveModuleNames!(
@@ -161,6 +173,9 @@ Deno.test('std package support resolves root and stdlib leaf specifiers to virtu
         PROCESS_STDLIB_MODULE_SPECIFIER,
         HTTP_STDLIB_MODULE_SPECIFIER,
         NET_STDLIB_MODULE_SPECIFIER,
+        NET_DNS_STDLIB_MODULE_SPECIFIER,
+        NET_TCP_STDLIB_MODULE_SPECIFIER,
+        NET_TLS_STDLIB_MODULE_SPECIFIER,
         NUMERICS_STDLIB_MODULE_SPECIFIER,
       ],
       '/virtual/index.ts',
@@ -212,6 +227,9 @@ Deno.test('std package support resolves root and stdlib leaf specifiers to virtu
   assertEquals(processResolved?.resolvedFileName, PROCESS_STDLIB_DECLARATION_FILE);
   assertEquals(httpResolved?.resolvedFileName, HTTP_STDLIB_DECLARATION_FILE);
   assertEquals(netResolved?.resolvedFileName, NET_STDLIB_DECLARATION_FILE);
+  assertEquals(netDnsResolved?.resolvedFileName, NET_DNS_STDLIB_DECLARATION_FILE);
+  assertEquals(netTcpResolved?.resolvedFileName, NET_TCP_STDLIB_DECLARATION_FILE);
+  assertEquals(netTlsResolved?.resolvedFileName, NET_TLS_STDLIB_DECLARATION_FILE);
   assertEquals(numericsResolved?.resolvedFileName, NUMERICS_STDLIB_DECLARATION_FILE);
 });
 
@@ -287,6 +305,9 @@ Deno.test('std package support projects generated Task object declarations', () 
   assertStringIncludes(NET_STDLIB_DECLARATION_TEXT, 'export declare class TlsListener');
   assertStringIncludes(NET_STDLIB_DECLARATION_TEXT, 'export declare function connectTls');
   assertStringIncludes(NET_STDLIB_DECLARATION_TEXT, 'export declare function listenTls');
+  assertStringIncludes(NET_DNS_STDLIB_DECLARATION_TEXT, 'export declare const Dns: Readonly<{');
+  assertStringIncludes(NET_TCP_STDLIB_DECLARATION_TEXT, 'export declare const Tcp: Readonly<{');
+  assertStringIncludes(NET_TLS_STDLIB_DECLARATION_TEXT, 'export declare const Tls: Readonly<{');
 });
 
 Deno.test('std package support rewrites generated relative stdlib declaration imports away from .ts sources', () => {

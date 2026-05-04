@@ -61,6 +61,9 @@ export const STABLE_RUNTIME_MODULES = [
   'process',
   'http',
   'net',
+  'net/dns',
+  'net/tcp',
+  'net/tls',
   'numerics',
 ] as const;
 

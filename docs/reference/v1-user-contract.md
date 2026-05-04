@@ -70,7 +70,8 @@ These areas remain experimental and should not be described as part of the stabl
 - runtime-target overrides and public target-matrix details
 - proof-of-concept builtin macros such as `#component`, `#sql`, `#css`, and `#graphql`
 - future stdlib families such as `log` and `layout`
-- future host capability modules such as `sts:fs`, `sts:env`, and `sts:cli`
+- target-aware host capability modules such as `sts:fs`, `sts:env`, `sts:cli`, `sts:process`,
+  `sts:http`, and `sts:net`
 - future portable stream-focused modules such as `sts:streams`
 - experimental language-owned features implemented in the repo but still outside the stable v1
   contract, including machine numerics in `sts:numerics` and the `// #[newtype]` / `// #[value]`

@@ -105,10 +105,14 @@ Deno.test('installed stdlib package exposes runnable stable runtime entrypoints'
   assertEquals(packageJson.exports?.['./result']?.import, './result.js');
   assertEquals(packageJson.exports?.['./crypto']?.import, './crypto.js');
   assertEquals(packageJson.exports?.['./crypto']?.types, './crypto.d.ts');
+  assertEquals(packageJson.exports?.['./net/tcp']?.import, './net/tcp.js');
+  assertEquals(packageJson.exports?.['./net/tcp']?.types, './net/tcp.d.ts');
   assert(files.has('/virtual/node_modules/@soundscript/soundscript/index.js'));
   assert(files.has('/virtual/node_modules/@soundscript/soundscript/result.js'));
   assert(files.has('/virtual/node_modules/@soundscript/soundscript/crypto.js'));
   assert(files.has('/virtual/node_modules/@soundscript/soundscript/crypto.d.ts'));
+  assert(files.has('/virtual/node_modules/@soundscript/soundscript/net/tcp.js'));
+  assert(files.has('/virtual/node_modules/@soundscript/soundscript/net/tcp.d.ts'));
 });
 
 Deno.test('installed stdlib package emits parser-stable soundscript sources for typeclasses', () => {
@@ -134,6 +138,7 @@ Deno.test('installed stdlib package resolves stable runtime subpaths from plain 
       "import { defaulted, nullable, optional, readonlyRecord, string } from '@soundscript/soundscript/decode';",
       "import { Crypto } from '@soundscript/soundscript/crypto';",
       "import { emptyJsonRecord, isJsonObject, mergeJsonRecords } from '@soundscript/soundscript/json';",
+      "import { Tcp } from '@soundscript/soundscript/net/tcp';",
       "import { collect, err, mapErr, ok, some, tapErr, unwrapOr, unwrapOrElse, unwrapOrThrow } from '@soundscript/soundscript/result';",
       '',
       "const decodedName = defaulted(optional(string), 'anon').decode(undefined);",
@@ -150,6 +155,7 @@ Deno.test('installed stdlib package resolves stable runtime subpaths from plain 
       "if (digest.tag !== 'ok' || digest.value.byteLength !== 32) {",
       "  throw new Error('expected SHA-256 digest bytes.');",
       '}',
+      'void Tcp;',
       '',
       'const merged = mergeJsonRecords(emptyJsonRecord(), { tags: decodedRecord.value });',
       'if (!isJsonObject(merged)) {',

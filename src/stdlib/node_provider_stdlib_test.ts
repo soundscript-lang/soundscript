@@ -8,6 +8,9 @@ import { Failure } from './failures.ts';
 import { Fs } from './fs.ts';
 import { Http } from './http.ts';
 import { Net } from './net.ts';
+import { lookupHost as lookupHostDns } from './net/dns.ts';
+import { connect as connectTcp, Tcp } from './net/tcp.ts';
+import { connectTls as connectTlsSocket, Tls } from './net/tls.ts';
 import { Process } from './process.ts';
 import { err, ok } from './result.ts';
 import { readAllText, writeAllBytes } from './streams.ts';
@@ -120,9 +123,17 @@ Deno.test('node provider process runs child commands and exposes piped output', 
 
 Deno.test('node provider net resolves localhost', async () => {
   const result = await Net.lookupHost('localhost');
+  const dnsResult = await lookupHostDns('localhost');
 
   assertEquals(result.tag, 'ok');
+  assertEquals(dnsResult.tag, 'ok');
   assertEquals(hasCapability('net.dns'), true);
+});
+
+Deno.test('node provider net submodules expose focused helper objects', () => {
+  assertEquals(typeof lookupHostDns, 'function');
+  assertEquals(connectTcp, Tcp.connect);
+  assertEquals(connectTlsSocket, Tls.connect);
 });
 
 Deno.test('node provider net opens TCP loopback streams', async () => {

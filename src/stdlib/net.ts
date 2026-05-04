@@ -192,10 +192,11 @@ export class TcpConnection implements AsyncDisposable {
   readonly writable: WritableStream<Uint8Array<ArrayBufferLike>>;
   readonly #socket: Socket;
 
-  constructor(socket: Socket) {
-    this.#socket = socket;
-    this.readable = readableToWeb(socket);
-    this.writable = writableToWeb(socket);
+  constructor(socket: unknown) {
+    const typedSocket = socket as Socket;
+    this.#socket = typedSocket;
+    this.readable = readableToWeb(typedSocket);
+    this.writable = writableToWeb(typedSocket);
   }
 
   get localAddress(): SocketAddress | undefined {
@@ -450,10 +451,11 @@ export class TlsConnection implements AsyncDisposable {
   readonly writable: WritableStream<Uint8Array<ArrayBufferLike>>;
   readonly #socket: TLSSocket;
 
-  constructor(socket: TLSSocket) {
-    this.#socket = socket;
-    this.readable = readableToWeb(socket);
-    this.writable = writableToWeb(socket);
+  constructor(socket: unknown) {
+    const typedSocket = socket as TLSSocket;
+    this.#socket = typedSocket;
+    this.readable = readableToWeb(typedSocket);
+    this.writable = writableToWeb(typedSocket);
   }
 
   get authorized(): boolean {

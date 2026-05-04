@@ -11,7 +11,10 @@ import {
   STS_ENV_MODULE_SPECIFIER,
   STS_FS_MODULE_SPECIFIER,
   STS_HTTP_MODULE_SPECIFIER,
+  STS_NET_DNS_MODULE_SPECIFIER,
   STS_NET_MODULE_SPECIFIER,
+  STS_NET_TCP_MODULE_SPECIFIER,
+  STS_NET_TLS_MODULE_SPECIFIER,
   STS_PROCESS_MODULE_SPECIFIER,
   WEB_DOM_MODULE_SPECIFIER,
 } from '../../project/soundscript_runtime_specifiers.ts';
@@ -138,7 +141,10 @@ function unavailableModuleForTarget(
     specifier === STS_CLI_MODULE_SPECIFIER ||
     specifier === STS_PROCESS_MODULE_SPECIFIER ||
     specifier === STS_HTTP_MODULE_SPECIFIER ||
-    specifier === STS_NET_MODULE_SPECIFIER
+    specifier === STS_NET_MODULE_SPECIFIER ||
+    specifier === STS_NET_DNS_MODULE_SPECIFIER ||
+    specifier === STS_NET_TCP_MODULE_SPECIFIER ||
+    specifier === STS_NET_TLS_MODULE_SPECIFIER
   ) {
     return {
       reason: 'this provider module requires a node-family JavaScript runtime.',

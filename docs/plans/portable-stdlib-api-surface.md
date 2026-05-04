@@ -1260,7 +1260,7 @@ until the Wasm runtime/compiler path is ready.
 | `sts:cli`                                                                     | gated                          | args, stdio metadata, terminal checks, terminal size                                                                                                                  |
 | `sts:process`                                                                 | gated                          | process info/cwd/platform/uptime/signals/exit code and child process spawn/output                                                                                     |
 | `sts:http`                                                                    | gated                          | Web `Request`/`Response` server, ready `listen`, run-until-closed `serve`, body limits, server timeouts, force-deadline `close`, low-level Node handler compatibility |
-| `sts:net`                                                                     | gated                          | DNS lookup, TCP connect/listen, TLS connect/listen                                                                                                                    |
+| `sts:net`, `sts:net/dns`, `sts:net/tcp`, `sts:net/tls`                        | gated                          | DNS lookup, TCP connect/listen, TLS connect/listen                                                                                                                    |
 | `sts:concurrency/parallel`, `sts:concurrency/sync`, `sts:concurrency/atomics` | gated/unsupported placeholders | gated/unsupported placeholders                                                                                                                                        |
 
 Browser code should continue to use Web-platform APIs for browser-native capabilities. `sts:fetch`
@@ -1303,7 +1303,8 @@ not a browser networking facade.
 ### Slice 5: Networking
 
 - Stabilize `sts:http` server shape.
-- Add `sts:net` DNS/TCP/TLS first.
+- Add `sts:net` DNS/TCP/TLS first, with `sts:net/dns`, `sts:net/tcp`, and `sts:net/tls` as narrower
+  provider entry points.
 - Add UDP after stream/resource semantics settle.
 - Keep WebSocket/WebTransport as Web-platform/provider surfaces until `sts:transport` is justified.
 
