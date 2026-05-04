@@ -446,57 +446,6 @@ Deno.test('node provider http close accepts force deadlines', async () => {
   assertEquals((await serverResult.value.closed()).tag, 'ok');
 });
 
-Deno.test('node provider http keeps low-level Node handler compatibility', async () => {
-  const serverResult = await Http.serve(
-    { hostname: '127.0.0.1', port: 0 },
-    (_request, response) => {
-      response.statusCode = 200;
-      response.end('node');
-    },
-  );
-
-  assertEquals(serverResult.tag, 'ok');
-  if (serverResult.tag === 'err') {
-    return;
-  }
-
-  try {
-    const response = await fetch(`http://127.0.0.1:${serverResult.value.port}/`);
-    assertEquals(await response.text(), 'node');
-  } finally {
-    assertEquals((await serverResult.value.close()).tag, 'ok');
-  }
-});
-
-Deno.test('node provider http applies known body limits to low-level Node handlers', async () => {
-  let handled = false;
-  const serverResult = await Http.serve(
-    { hostname: '127.0.0.1', port: 0, maxRequestBodyBytes: 2 },
-    (_request, response) => {
-      handled = true;
-      response.statusCode = 200;
-      response.end('node');
-    },
-  );
-
-  assertEquals(serverResult.tag, 'ok');
-  if (serverResult.tag === 'err') {
-    return;
-  }
-
-  try {
-    const response = await fetch(`http://127.0.0.1:${serverResult.value.port}/`, {
-      body: 'toolarge',
-      method: 'POST',
-    });
-    assertEquals(response.status, 413);
-    assertEquals(await response.text(), 'HTTP request body exceeded 2 bytes.');
-    assertEquals(handled, false);
-  } finally {
-    assertEquals((await serverResult.value.close()).tag, 'ok');
-  }
-});
-
 Deno.test('node provider http serve exits when signal is already aborted', async () => {
   const controller = new AbortController();
   controller.abort();

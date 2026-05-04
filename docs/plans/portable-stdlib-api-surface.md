@@ -1087,7 +1087,9 @@ Unix domain sockets are `net.unix` and target-gated.
 ## `sts:http`
 
 `fetch` is the portable HTTP client baseline. `sts:http` owns server APIs and advanced provider
-integration. It should use Web `Request` / `Response` objects where practical.
+integration. It should use Web `Request` / `Response` objects where practical. Raw host
+request/response handler shapes, such as Node's `IncomingMessage` / `ServerResponse`, stay behind
+explicit `#[interop]` host imports instead of being re-exported from `sts:http`.
 
 ```ts
 export type Handler = (request: Request) => Response | AsyncResult<Response, Failure>;

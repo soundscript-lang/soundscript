@@ -13,15 +13,6 @@ import { err, ok, type Result } from 'sts:result';
 import type { SocketAddress } from 'sts:net';
 import type { Duration } from 'sts:time';
 
-export type HttpRequest = IncomingMessage;
-export type HttpResponse = ServerResponse;
-
-export interface HttpServer {
-  readonly port: number;
-  readonly address: SocketAddress;
-  close(options?: CloseOptions): AsyncResult<void, Failure>;
-}
-
 export interface ServeOptions {
   readonly hostname?: string;
   readonly port: number;
@@ -36,13 +27,6 @@ export interface ServeOptions {
 export interface CloseOptions {
   readonly forceAfter?: Duration;
 }
-
-export type NodeHttpHandler = (
-  request: HttpRequest,
-  response: HttpResponse,
-) => void | Promise<void>;
-
-export type HttpHandler = NodeHttpHandler;
 
 export type Handler = (request: Request) => Response | AsyncResult<Response, Failure>;
 
@@ -524,56 +508,6 @@ export function server(
   }
 }
 
-export function serveNode(
-  options: ServeOptions,
-  handler: NodeHttpHandler,
-): AsyncResult<HttpServer, Failure> {
-  try {
-    validateServeOptions(options);
-  } catch (error) {
-    return Promise.resolve(err(failureFromUnknown(error)));
-  }
-
-  return new Promise((resolve) => {
-    const sockets = new Set<Socket>();
-    const server = nodeCreateServer((request, response) => {
-      const bodyLimitFailure = requestBodyLimitFailure(request, options.maxRequestBodyBytes);
-      if (bodyLimitFailure) {
-        response.statusCode = 413;
-        response.end(bodyLimitFailure.message);
-        return;
-      }
-
-      Promise.resolve(handler(request, response)).catch((error) => {
-        response.statusCode = 500;
-        response.end(normalizeThrown(error).message);
-      });
-    });
-    applyNodeServerOptions(server, options);
-    server.on('connection', (socket) => {
-      trackSocket(sockets, socket);
-    });
-
-    server.once('error', (error) => {
-      resolve(err(failureFromUnknown(error)));
-    });
-    server.listen(options.port, options.hostname, () => {
-      const address = server.address() as AddressInfo | string | null;
-      const socketAddress = nodeAddressToSocketAddress(address, {
-        hostname: options.hostname ?? '0.0.0.0',
-        port: options.port,
-      });
-      resolve(ok({
-        port: socketAddress.port,
-        address: socketAddress,
-        close(closeOptions: CloseOptions = {}) {
-          return closeNodeServer(server, sockets, closeOptions);
-        },
-      }));
-    });
-  });
-}
-
 export function listen(
   options: ServeOptions & { readonly handle: Handler },
 ): AsyncResult<Server, Failure> {
@@ -586,20 +520,8 @@ export function listen(
 
 export function serve(
   options: ServeOptions & { readonly handle: Handler },
-): AsyncResult<void, Failure>;
-export function serve(
-  options: ServeOptions,
-  handler: NodeHttpHandler,
-): AsyncResult<HttpServer, Failure>;
-export function serve(
-  options: ServeOptions | (ServeOptions & { readonly handle: Handler }),
-  handler?: NodeHttpHandler,
-): AsyncResult<void | HttpServer, Failure> {
-  if (handler) {
-    return serveNode(options, handler);
-  }
-
-  const created = server(options as ServeOptions & { readonly handle: Handler });
+): AsyncResult<void, Failure> {
+  const created = server(options);
   if (created.tag === 'err') {
     return Promise.resolve(created);
   }
@@ -610,5 +532,4 @@ export const Http = Object.freeze({
   server,
   listen,
   serve,
-  serveNode,
 });

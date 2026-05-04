@@ -62,9 +62,10 @@ The stable `sts:*` surface stays focused and composable.
   JS-neutral portable support modules. `sts:bytes` is the shared low-level byte surface for
   zero-copy views, explicit copies, shared-buffer detection, and host-boundary buffer conversion.
 - `sts:fs`, `sts:env`, `sts:cli`, `sts:process`, `sts:http`, and `sts:net` are initial js-node
-  provider modules and are capability-gated away from browser/Wasm targets. `sts:net/dns`,
-  `sts:net/tcp`, and `sts:net/tls` provide narrower raw networking entry points, while
-  `sts:process/command` and `sts:process/signals` provide narrower process entry points.
+  provider modules and are capability-gated away from browser/Wasm targets. `sts:http` exposes Web
+  `Request` / `Response` handlers, not raw Node handler types. `sts:net/dns`, `sts:net/tcp`, and
+  `sts:net/tls` provide narrower raw networking entry points, while `sts:process/command` and
+  `sts:process/signals` provide narrower process entry points.
 - `sts:compare` owns `Eq`, `Order`, and comparator composition helpers.
 - `sts:hash` owns hashing and equality-key protocols.
 - `sts:derive` owns compiler-provided declaration macros such as `eq`, `hash`, `decode`, `encode`,

@@ -332,7 +332,9 @@ Deno.test('std package support projects generated Task object declarations', () 
   assertStringIncludes(HTTP_STDLIB_DECLARATION_TEXT, 'close(options?: CloseOptions)');
   assertStringIncludes(HTTP_STDLIB_DECLARATION_TEXT, 'export declare function listen');
   assertStringIncludes(HTTP_STDLIB_DECLARATION_TEXT, 'export declare function serve');
-  assertStringIncludes(HTTP_STDLIB_DECLARATION_TEXT, 'export declare function serveNode');
+  assertEquals(HTTP_STDLIB_DECLARATION_TEXT.includes('node:http'), false);
+  assertEquals(HTTP_STDLIB_DECLARATION_TEXT.includes('serveNode'), false);
+  assertEquals(HTTP_STDLIB_DECLARATION_TEXT.includes('NodeHttpHandler'), false);
   assertStringIncludes(NET_STDLIB_DECLARATION_TEXT, 'export declare function lookupHost');
   assertStringIncludes(NET_STDLIB_DECLARATION_TEXT, 'export declare class TcpConnection');
   assertStringIncludes(NET_STDLIB_DECLARATION_TEXT, 'export declare class TcpListener');
