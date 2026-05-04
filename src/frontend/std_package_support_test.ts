@@ -319,6 +319,7 @@ Deno.test('std package support projects generated Task object declarations', () 
   assertStringIncludes(FS_STDLIB_DECLARATION_TEXT, 'export declare function readDir');
   assertEquals(FS_STDLIB_DECLARATION_TEXT.includes('LegacyFileInfo'), false);
   assertEquals(FS_STDLIB_DECLARATION_TEXT.includes('export declare function info'), false);
+  assertEquals(FS_STDLIB_DECLARATION_TEXT.includes('export declare function exists'), false);
   assertEquals(FS_STDLIB_DECLARATION_TEXT.includes('makeDirectory'), false);
   assertEquals(FS_STDLIB_DECLARATION_TEXT.includes('readBytes'), false);
   assertStringIncludes(ENV_STDLIB_DECLARATION_TEXT, 'export declare function get');

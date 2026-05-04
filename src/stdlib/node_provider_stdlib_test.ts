@@ -48,7 +48,6 @@ Deno.test('node provider fs reads and writes AsyncResult values', async () => {
     const bytes = await Fs.readFile(path);
     const stat = await Fs.stat(path);
     const entries = await Fs.readDir(`${tempDirectory}/nested`);
-    const exists = await Fs.exists(path);
     const noCreate = await Fs.writeTextFile(`${tempDirectory}/nested/no-create.txt`, 'missing', {
       create: false,
     });
@@ -64,7 +63,6 @@ Deno.test('node provider fs reads and writes AsyncResult values', async () => {
     assertEquals(bytes.tag === 'ok' ? Bytes.toString(bytes.value) : undefined, 'sound');
     assertEquals(stat.tag === 'ok' ? stat.value.type : undefined, 'file');
     assertEquals(entries.tag === 'ok' ? entries.value[0]?.name : undefined, 'value.txt');
-    assertEquals(exists.tag === 'ok' ? exists.value : undefined, true);
     assertEquals(noCreate.tag, 'err');
     assertEquals(noTruncate.tag === 'ok' ? noTruncate.value : undefined, 'xycdef');
     assertEquals(latin1.tag === 'ok' ? [...latin1.value] : undefined, [233]);

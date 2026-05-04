@@ -200,19 +200,6 @@ async function createParentDirectoryIfRequested(
   }
 }
 
-export async function exists(path: PathLike): AsyncResult<boolean, Failure> {
-  try {
-    await access(path);
-    return ok(true);
-  } catch (error) {
-    const code = (error as { code?: unknown })?.code;
-    if (code === 'ENOENT') {
-      return ok(false);
-    }
-    return err(failureFromUnknown(error));
-  }
-}
-
 export async function readFile(
   path: PathLike,
   options: ReadFileOptions = {},
@@ -379,7 +366,6 @@ export async function realPath(
 }
 
 export const Fs = Object.freeze({
-  exists,
   readFile,
   readTextFile,
   writeFile,
