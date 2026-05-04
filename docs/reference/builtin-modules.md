@@ -62,7 +62,8 @@ The stable `sts:*` surface stays focused and composable.
   JS-neutral portable support modules.
 - `sts:fs`, `sts:env`, `sts:cli`, `sts:process`, `sts:http`, and `sts:net` are initial js-node
   provider modules and are capability-gated away from browser/Wasm targets. `sts:net/dns`,
-  `sts:net/tcp`, and `sts:net/tls` provide narrower raw networking entry points.
+  `sts:net/tcp`, and `sts:net/tls` provide narrower raw networking entry points, while
+  `sts:process/command` and `sts:process/signals` provide narrower process entry points.
 - `sts:compare` owns `Eq`, `Order`, and comparator composition helpers.
 - `sts:hash` owns hashing and equality-key protocols.
 - `sts:derive` owns compiler-provided declaration macros such as `eq`, `hash`, `decode`, `encode`,
@@ -90,7 +91,7 @@ The portable stdlib is being implemented JS-first. The current checked behavior 
 | filesystem (`sts:fs`)                                                                                      | no                       | yes                      |
 | environment (`sts:env`)                                                                                    | no                       | yes                      |
 | CLI (`sts:cli`)                                                                                            | no                       | yes                      |
-| process information and child processes (`sts:process`)                                                    | no                       | yes                      |
+| process information and child processes (`sts:process`, `sts:process/command`, `sts:process/signals`)      | no                       | yes                      |
 | HTTP client                                                                                                | use `sts:fetch`          | use `sts:fetch`          |
 | HTTP server (`sts:http`)                                                                                   | no                       | yes                      |
 | raw DNS/TCP/TLS networking (`sts:net`, `sts:net/dns`, `sts:net/tcp`, `sts:net/tls`)                        | no                       | yes                      |

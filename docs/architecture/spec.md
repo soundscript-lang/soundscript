@@ -457,6 +457,7 @@ Non-portable host access belongs in explicit capability modules:
 - `sts:env`
 - `sts:cli`
 - `sts:process`
+- `sts:process/command` and `sts:process/signals`
 - `sts:http`
 - `sts:net`, `sts:net/dns`, `sts:net/tcp`, and `sts:net/tls`
 

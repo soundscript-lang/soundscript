@@ -2806,6 +2806,8 @@ Deno.test('analyzeProject resolves js-node provider stdlib modules on js-node', 
       "import { required } from 'sts:env';",
       "import { args } from 'sts:cli';",
       "import { info, output, spawn } from 'sts:process';",
+      "import { output as commandOutput, spawn as commandSpawn } from 'sts:process/command';",
+      "import { onSignal as onProcessSignal } from 'sts:process/signals';",
       "import { listen as listenHttp, server } from 'sts:http';",
       "import { connect, connectTls, listen, listenTls, lookupHost } from 'sts:net';",
       "import { lookupHost as lookupHostDns } from 'sts:net/dns';",
@@ -2818,6 +2820,9 @@ Deno.test('analyzeProject resolves js-node provider stdlib modules on js-node', 
       'void info;',
       'void output;',
       'void spawn;',
+      'void commandOutput;',
+      'void commandSpawn;',
+      'void onProcessSignal;',
       'void server;',
       'void listenHttp;',
       'void connect;',
@@ -2874,9 +2879,11 @@ Deno.test('analyzeProject gates js-node provider modules on js-browser', async (
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       "import { readText } from 'sts:fs';",
+      "import { output } from 'sts:process/command';",
       "import { connect } from 'sts:net/tcp';",
       '',
       'void readText;',
+      'void output;',
       'void connect;',
       '',
     ].join('\n'),
@@ -2893,6 +2900,7 @@ Deno.test('analyzeProject gates js-node provider modules on js-browser', async (
   );
   assertEquals(capabilityDiagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'sts:fs',
+    'sts:process/command',
     'sts:net/tcp',
   ]);
 });

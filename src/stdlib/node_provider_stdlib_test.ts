@@ -12,6 +12,8 @@ import { lookupHost as lookupHostDns } from './net/dns.ts';
 import { connect as connectTcp, Tcp } from './net/tcp.ts';
 import { connectTls as connectTlsSocket, Tls } from './net/tls.ts';
 import { Process } from './process.ts';
+import { Command, output as commandOutput } from './process/command.ts';
+import { onSignal as onProcessSignal, Signals } from './process/signals.ts';
 import { err, ok } from './result.ts';
 import { readAllText, writeAllBytes } from './streams.ts';
 import { Duration } from './time.ts';
@@ -119,6 +121,11 @@ Deno.test('node provider process runs child commands and exposes piped output', 
   assertEquals(text?.tag === 'ok' ? text.value : undefined, 'spawned\n');
   assertEquals(status.tag === 'ok' ? status.value.success : undefined, true);
   assertEquals(cachedStatus.tag === 'ok' ? cachedStatus.value.success : undefined, true);
+});
+
+Deno.test('node provider process submodules expose focused helper objects', () => {
+  assertEquals(commandOutput, Command.output);
+  assertEquals(onProcessSignal, Signals.onSignal);
 });
 
 Deno.test('node provider net resolves localhost', async () => {

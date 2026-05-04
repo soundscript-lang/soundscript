@@ -59,6 +59,8 @@ export const STABLE_RUNTIME_MODULES = [
   'env',
   'cli',
   'process',
+  'process/command',
+  'process/signals',
   'http',
   'net',
   'net/dns',

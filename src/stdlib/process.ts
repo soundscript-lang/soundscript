@@ -172,12 +172,13 @@ export class Child implements AsyncDisposable {
   readonly #child: ChildProcess;
   #status?: AsyncResult<CommandStatus, Failure>;
 
-  constructor(child: ChildProcess) {
-    this.#child = child;
-    this.pid = child.pid;
-    this.stdin = writableToWeb(child.stdin);
-    this.stdout = readableToWeb(child.stdout);
-    this.stderr = readableToWeb(child.stderr);
+  constructor(child: unknown) {
+    const typedChild = child as ChildProcess;
+    this.#child = typedChild;
+    this.pid = typedChild.pid;
+    this.stdin = writableToWeb(typedChild.stdin);
+    this.stdout = readableToWeb(typedChild.stdout);
+    this.stderr = readableToWeb(typedChild.stderr);
   }
 
   status(): AsyncResult<CommandStatus, Failure> {

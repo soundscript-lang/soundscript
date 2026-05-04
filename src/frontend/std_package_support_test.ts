@@ -75,6 +75,12 @@ import {
   PATH_STDLIB_DECLARATION_FILE,
   PATH_STDLIB_DECLARATION_TEXT,
   PATH_STDLIB_MODULE_SPECIFIER,
+  PROCESS_COMMAND_STDLIB_DECLARATION_FILE,
+  PROCESS_COMMAND_STDLIB_DECLARATION_TEXT,
+  PROCESS_COMMAND_STDLIB_MODULE_SPECIFIER,
+  PROCESS_SIGNALS_STDLIB_DECLARATION_FILE,
+  PROCESS_SIGNALS_STDLIB_DECLARATION_TEXT,
+  PROCESS_SIGNALS_STDLIB_MODULE_SPECIFIER,
   PROCESS_STDLIB_DECLARATION_FILE,
   PROCESS_STDLIB_DECLARATION_TEXT,
   PROCESS_STDLIB_MODULE_SPECIFIER,
@@ -133,6 +139,8 @@ Deno.test('std package support resolves root and stdlib leaf specifiers to virtu
     envResolved,
     cliResolved,
     processResolved,
+    processCommandResolved,
+    processSignalsResolved,
     httpResolved,
     netResolved,
     netDnsResolved,
@@ -171,6 +179,8 @@ Deno.test('std package support resolves root and stdlib leaf specifiers to virtu
         ENV_STDLIB_MODULE_SPECIFIER,
         CLI_STDLIB_MODULE_SPECIFIER,
         PROCESS_STDLIB_MODULE_SPECIFIER,
+        PROCESS_COMMAND_STDLIB_MODULE_SPECIFIER,
+        PROCESS_SIGNALS_STDLIB_MODULE_SPECIFIER,
         HTTP_STDLIB_MODULE_SPECIFIER,
         NET_STDLIB_MODULE_SPECIFIER,
         NET_DNS_STDLIB_MODULE_SPECIFIER,
@@ -225,6 +235,8 @@ Deno.test('std package support resolves root and stdlib leaf specifiers to virtu
   assertEquals(envResolved?.resolvedFileName, ENV_STDLIB_DECLARATION_FILE);
   assertEquals(cliResolved?.resolvedFileName, CLI_STDLIB_DECLARATION_FILE);
   assertEquals(processResolved?.resolvedFileName, PROCESS_STDLIB_DECLARATION_FILE);
+  assertEquals(processCommandResolved?.resolvedFileName, PROCESS_COMMAND_STDLIB_DECLARATION_FILE);
+  assertEquals(processSignalsResolved?.resolvedFileName, PROCESS_SIGNALS_STDLIB_DECLARATION_FILE);
   assertEquals(httpResolved?.resolvedFileName, HTTP_STDLIB_DECLARATION_FILE);
   assertEquals(netResolved?.resolvedFileName, NET_STDLIB_DECLARATION_FILE);
   assertEquals(netDnsResolved?.resolvedFileName, NET_DNS_STDLIB_DECLARATION_FILE);
@@ -282,6 +294,14 @@ Deno.test('std package support projects generated Task object declarations', () 
   assertStringIncludes(PROCESS_STDLIB_DECLARATION_TEXT, 'export declare class Child');
   assertStringIncludes(PROCESS_STDLIB_DECLARATION_TEXT, 'export declare function spawn');
   assertStringIncludes(PROCESS_STDLIB_DECLARATION_TEXT, 'export declare function output');
+  assertStringIncludes(
+    PROCESS_COMMAND_STDLIB_DECLARATION_TEXT,
+    'export declare const Command: Readonly<{',
+  );
+  assertStringIncludes(
+    PROCESS_SIGNALS_STDLIB_DECLARATION_TEXT,
+    'export declare const Signals: Readonly<{',
+  );
   assertStringIncludes(
     PROCESS_STDLIB_DECLARATION_TEXT,
     'export declare function onSignal(signal: SignalName, handler: () => void): Result<Disposable, Failure>;',

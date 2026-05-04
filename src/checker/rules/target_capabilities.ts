@@ -15,7 +15,9 @@ import {
   STS_NET_MODULE_SPECIFIER,
   STS_NET_TCP_MODULE_SPECIFIER,
   STS_NET_TLS_MODULE_SPECIFIER,
+  STS_PROCESS_COMMAND_MODULE_SPECIFIER,
   STS_PROCESS_MODULE_SPECIFIER,
+  STS_PROCESS_SIGNALS_MODULE_SPECIFIER,
   WEB_DOM_MODULE_SPECIFIER,
 } from '../../project/soundscript_runtime_specifiers.ts';
 import { toSourceFileName } from '../../frontend/project_frontend.ts';
@@ -140,6 +142,8 @@ function unavailableModuleForTarget(
     specifier === STS_ENV_MODULE_SPECIFIER ||
     specifier === STS_CLI_MODULE_SPECIFIER ||
     specifier === STS_PROCESS_MODULE_SPECIFIER ||
+    specifier === STS_PROCESS_COMMAND_MODULE_SPECIFIER ||
+    specifier === STS_PROCESS_SIGNALS_MODULE_SPECIFIER ||
     specifier === STS_HTTP_MODULE_SPECIFIER ||
     specifier === STS_NET_MODULE_SPECIFIER ||
     specifier === STS_NET_DNS_MODULE_SPECIFIER ||

@@ -1258,7 +1258,7 @@ until the Wasm runtime/compiler path is ready.
 | `sts:fs`                                                                      | gated                          | file read/write, stat/lstat, directories, copy/rename/remove, real path                                                                                               |
 | `sts:env`                                                                     | gated                          | read, require, set, remove, record snapshot                                                                                                                           |
 | `sts:cli`                                                                     | gated                          | args, stdio metadata, terminal checks, terminal size                                                                                                                  |
-| `sts:process`                                                                 | gated                          | process info/cwd/platform/uptime/signals/exit code and child process spawn/output                                                                                     |
+| `sts:process`, `sts:process/command`, `sts:process/signals`                   | gated                          | process info/cwd/platform/uptime/signals/exit code and child process spawn/output                                                                                     |
 | `sts:http`                                                                    | gated                          | Web `Request`/`Response` server, ready `listen`, run-until-closed `serve`, body limits, server timeouts, force-deadline `close`, low-level Node handler compatibility |
 | `sts:net`, `sts:net/dns`, `sts:net/tcp`, `sts:net/tls`                        | gated                          | DNS lookup, TCP connect/listen, TLS connect/listen                                                                                                                    |
 | `sts:concurrency/parallel`, `sts:concurrency/sync`, `sts:concurrency/atomics` | gated/unsupported placeholders | gated/unsupported placeholders                                                                                                                                        |
@@ -1296,7 +1296,8 @@ not a browser networking facade.
 
 ### Slice 4: System Capabilities
 
-- Implement `sts:fs`, `sts:env`, `sts:cli`, and `sts:process` for Node-family targets first.
+- Implement `sts:fs`, `sts:env`, `sts:cli`, and `sts:process` for Node-family targets first, with
+  `sts:process/command` and `sts:process/signals` as narrower provider entry points.
 - Add Wasm-hosted provider shims where semantics are honest.
 - Keep browser unsupported diagnostics precise.
 
