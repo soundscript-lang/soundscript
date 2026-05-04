@@ -7,6 +7,7 @@ import { readBytes, readJson, readText, request } from './fetch.ts';
 import { hasCapability } from './capabilities.ts';
 import { fillRandom, randomBytes, uuidV4 } from './random.ts';
 import { format, parse, posix, relative, windows } from './path.ts';
+import { canParseUrl, fileUrlToPath, parseUrl, pathToFileUrl, URL } from './url.ts';
 import { ok } from './result.ts';
 
 Deno.test('streams helpers read and write Web byte streams', async () => {
@@ -88,6 +89,21 @@ Deno.test('text helpers encode and decode utf8 with Result errors', () => {
 
   const decoded = decodeUtf8(Bytes.fromString('world'));
   assertEquals(decoded, ok('world'));
+});
+
+Deno.test('url helpers expose result-oriented parsing', () => {
+  const parsed = parseUrl('/api', 'https://example.com/root/');
+  assertEquals(parsed.tag === 'ok' ? parsed.value.href : undefined, 'https://example.com/api');
+  assertEquals(canParseUrl('/api', 'https://example.com/root/'), true);
+  assertEquals(parseUrl('http://[').tag, 'err');
+  assertEquals(canParseUrl('http://['), false);
+});
+
+Deno.test('url file path helpers fail explicitly until target path providers own them', () => {
+  const fileUrl = new URL('file:///tmp/sound.txt');
+
+  assertEquals(fileUrlToPath(fileUrl).tag, 'err');
+  assertEquals(pathToFileUrl('/tmp/sound.txt').tag, 'err');
 });
 
 Deno.test('random helpers expose crypto random bytes and uuids', () => {

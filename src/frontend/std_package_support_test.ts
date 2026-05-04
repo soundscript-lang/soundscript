@@ -105,6 +105,7 @@ import {
   TIME_STDLIB_DECLARATION_TEXT,
   TIME_STDLIB_MODULE_SPECIFIER,
   URL_STDLIB_DECLARATION_FILE,
+  URL_STDLIB_DECLARATION_TEXT,
   URL_STDLIB_MODULE_SPECIFIER,
   withStdPackageModuleResolution,
 } from './std_package_support.ts';
@@ -299,6 +300,10 @@ Deno.test('std package support projects generated Task object declarations', () 
   assertStringIncludes(CRYPTO_DIGEST_STDLIB_DECLARATION_TEXT, 'export declare const Digest');
   assertStringIncludes(CRYPTO_HMAC_STDLIB_DECLARATION_TEXT, 'export declare const Hmac');
   assertStringIncludes(PATH_STDLIB_DECLARATION_TEXT, 'export declare function join');
+  assertStringIncludes(URL_STDLIB_DECLARATION_TEXT, 'export declare function parseUrl');
+  assertStringIncludes(URL_STDLIB_DECLARATION_TEXT, 'export declare function canParseUrl');
+  assertStringIncludes(URL_STDLIB_DECLARATION_TEXT, 'export declare function fileUrlToPath');
+  assertStringIncludes(URL_STDLIB_DECLARATION_TEXT, 'export declare function pathToFileUrl');
   assertStringIncludes(BYTES_STDLIB_DECLARATION_TEXT, 'export declare const Bytes');
   assertStringIncludes(BYTES_STDLIB_DECLARATION_TEXT, 'export declare function view');
   assertStringIncludes(BYTES_STDLIB_DECLARATION_TEXT, 'export declare function copyTo');

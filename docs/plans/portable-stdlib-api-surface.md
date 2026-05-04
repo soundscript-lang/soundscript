@@ -276,7 +276,8 @@ export function pathToFileUrl(path: string): Result<URL, Failure>;
 ```
 
 `fileUrlToPath` and `pathToFileUrl` are target-aware because path interpretation is provider
-specific. Pure path manipulation belongs in `sts:path`.
+specific. The JS-neutral slice exports them but returns `UnsupportedCapabilityFailure` until a
+target path provider owns the platform rules. Pure path manipulation belongs in `sts:path`.
 
 ## `sts:fetch`
 
