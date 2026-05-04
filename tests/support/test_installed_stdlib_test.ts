@@ -105,6 +105,8 @@ Deno.test('installed stdlib package exposes runnable stable runtime entrypoints'
   assertEquals(packageJson.exports?.['./result']?.import, './result.js');
   assertEquals(packageJson.exports?.['./crypto']?.import, './crypto.js');
   assertEquals(packageJson.exports?.['./crypto']?.types, './crypto.d.ts');
+  assertEquals(packageJson.exports?.['./crypto/digest']?.import, './crypto/digest.js');
+  assertEquals(packageJson.exports?.['./crypto/hmac']?.import, './crypto/hmac.js');
   assertEquals(packageJson.exports?.['./process/command']?.import, './process/command.js');
   assertEquals(packageJson.exports?.['./process/signals']?.import, './process/signals.js');
   assertEquals(packageJson.exports?.['./net/tcp']?.import, './net/tcp.js');
@@ -113,6 +115,8 @@ Deno.test('installed stdlib package exposes runnable stable runtime entrypoints'
   assert(files.has('/virtual/node_modules/@soundscript/soundscript/result.js'));
   assert(files.has('/virtual/node_modules/@soundscript/soundscript/crypto.js'));
   assert(files.has('/virtual/node_modules/@soundscript/soundscript/crypto.d.ts'));
+  assert(files.has('/virtual/node_modules/@soundscript/soundscript/crypto/digest.js'));
+  assert(files.has('/virtual/node_modules/@soundscript/soundscript/crypto/hmac.js'));
   assert(files.has('/virtual/node_modules/@soundscript/soundscript/process/command.js'));
   assert(files.has('/virtual/node_modules/@soundscript/soundscript/process/signals.js'));
   assert(files.has('/virtual/node_modules/@soundscript/soundscript/net/tcp.js'));
@@ -141,6 +145,8 @@ Deno.test('installed stdlib package resolves stable runtime subpaths from plain 
     [
       "import { defaulted, nullable, optional, readonlyRecord, string } from '@soundscript/soundscript/decode';",
       "import { Crypto } from '@soundscript/soundscript/crypto';",
+      "import { Digest } from '@soundscript/soundscript/crypto/digest';",
+      "import { Hmac } from '@soundscript/soundscript/crypto/hmac';",
       "import { emptyJsonRecord, isJsonObject, mergeJsonRecords } from '@soundscript/soundscript/json';",
       "import { Tcp } from '@soundscript/soundscript/net/tcp';",
       "import { Command } from '@soundscript/soundscript/process/command';",
@@ -161,6 +167,8 @@ Deno.test('installed stdlib package resolves stable runtime subpaths from plain 
       "if (digest.tag !== 'ok' || digest.value.byteLength !== 32) {",
       "  throw new Error('expected SHA-256 digest bytes.');",
       '}',
+      'void Digest;',
+      'void Hmac;',
       'void Tcp;',
       'void Command;',
       'void Signals;',

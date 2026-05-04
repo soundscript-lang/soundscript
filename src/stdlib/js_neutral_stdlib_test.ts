@@ -4,6 +4,8 @@ import { Bytes } from './bytes.ts';
 import { hasCapability, requireCapability } from './capabilities.ts';
 import { log } from './console.ts';
 import { Crypto } from './crypto.ts';
+import { Digest } from './crypto/digest.ts';
+import { Hmac } from './crypto/hmac.ts';
 import { basename, dirname, join, normalize } from './path.ts';
 import { Duration, monotonic, sleep, wall } from './time.ts';
 
@@ -52,6 +54,8 @@ Deno.test('crypto helpers digest hmac random and compare bytes', async () => {
   const input = Bytes.fromString('soundscript');
   const digest = await Crypto.digest('SHA-256', input);
   const hmac = await Crypto.hmac('SHA-256', Bytes.fromString('key'), input);
+  const submoduleDigest = await Digest.digest('SHA-256', input);
+  const submoduleHmac = await Hmac.hmac('SHA-256', Bytes.fromString('key'), input);
   const random = Crypto.randomBytes(16);
 
   assertEquals(digest.tag, 'ok');
@@ -64,6 +68,8 @@ Deno.test('crypto helpers digest hmac random and compare bytes', async () => {
     hmac.tag === 'ok' ? toHex(hmac.value) : undefined,
     '1cbabb825d89715618fed01085095c8d137c396058db97a715c328f138f28ff8',
   );
+  assertEquals(submoduleDigest, digest);
+  assertEquals(submoduleHmac, hmac);
   assertEquals(random.tag, 'ok');
   assertEquals(random.tag === 'ok' ? random.value.byteLength : undefined, 16);
   const equal = Crypto.timingSafeEqual(input, Bytes.fromString('soundscript'));
