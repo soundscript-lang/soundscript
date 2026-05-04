@@ -69,7 +69,7 @@ Reference material:
 
 ## V1 Public Surface
 
-Prefer one primary module:
+Prefer the portable root plus focused provider modules:
 
 ```ts
 import { type AsyncResult } from 'sts:concurrency';
