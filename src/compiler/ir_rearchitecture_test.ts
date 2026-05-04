@@ -195,6 +195,12 @@ Deno.test('compiler wasm-gc cutover inventory locks the core language gate famil
       WASM_GC_LEGACY_FEATURE_FREEZE.policy.includes('WasmGcModulePlanIR'),
     true,
   );
+  assertEquals(
+    WASM_GC_CORE_CUTOVER_INVENTORY
+      .filter((entry) => entry.status === 'wasm-gc-emittable')
+      .every((entry) => entry.focusedGate.includes('compileProject')),
+    true,
+  );
 });
 
 Deno.test('compiler shadow SourceHIR preserves structured control flow and lvalue roles', async () => {
@@ -5238,6 +5244,183 @@ Deno.test('host promise import emits bridge helpers', async () => {
   assertEquals(wat.includes('jspi'), false);
   assertEquals(snapshot.wasmGcPlan.diagnostics.length, 0);
   assertEquals(snapshot.wasmGcPlan.functionPlans.every((func) => func.bodyStatus === 'emittable'), true);
+});
+
+Deno.test('compileProject selects source-hir for union typeof narrowing', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            lib: ['ES2022'],
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            target: 'wasm-node',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: `
+        export function format(value: number | string): number {
+          if (typeof value === "number") {
+            return value + 1;
+          }
+          return -1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const wat = emitWasmGcModulePlan(plan);
+  const result = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  const families = manifest.familyRequirements.map((req) => req.family).sort();
+  assertEquals(families.includes('finite_union'), true);
+  assertEquals(plan.functionPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(wat.includes('jspi'), false);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(result.artifacts?.backend, 'wasm-gc');
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
+});
+
+Deno.test('compileProject selects source-hir for Map mutation and lookup', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            lib: ['ES2022'],
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            target: 'wasm-node',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: `
+        export function lookup(): number {
+          const map = new Map<string, number>();
+          map.set("a", 1);
+          const value = map.get("a");
+          if (value === undefined) {
+            return -1;
+          }
+          return value;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const wat = emitWasmGcModulePlan(plan);
+  const result = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  const families = manifest.familyRequirements.map((req) => req.family).sort();
+  assertEquals(families.includes('map_set') || families.includes('finite_union'), true);
+  assertEquals(plan.functionPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(wat.includes('jspi'), false);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(result.artifacts?.backend, 'wasm-gc');
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
+});
+
+Deno.test('compileProject selects source-hir for for-of over Map values', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({ compilerOptions: { strict: true, noEmit: true, target: 'ES2022', module: 'ESNext', lib: ['ES2022'] }, include: ['src/**/*.ts'], soundscript: { target: 'wasm-node' } }, null, 2),
+    },
+    { path: 'src/index.ts', contents: `export function sum(): number { const map = new Map<string, number>(); map.set("a", 1); map.set("b", 2); let total = 0; for (const value of map.values()) { total = total + value; } return total; }` },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const wat = emitWasmGcModulePlan(plan);
+  const result = compileProject({ projectPath: join(tempDirectory, 'tsconfig.json'), workingDirectory: tempDirectory });
+  assertEquals(manifest.familyRequirements.map(r => r.family).includes('map'), true);
+  assertEquals(plan.functionPlans.every(f => f.bodyStatus === 'emittable'), true);
+  assertEquals(wat.includes('jspi'), false);
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(result.artifacts?.backend, 'wasm-gc');
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
+});
+
+Deno.test('compileProject selects source-hir for for-of over Set values', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({ compilerOptions: { strict: true, noEmit: true, target: 'ES2022', module: 'ESNext', lib: ['ES2022'] }, include: ['src/**/*.ts'], soundscript: { target: 'wasm-node' } }, null, 2),
+    },
+    { path: 'src/index.ts', contents: `export function sum(): number { const set = new Set<number>(); set.add(1); set.add(2); let total = 0; for (const value of set.values()) { total = total + value; } return total; }` },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const wat = emitWasmGcModulePlan(plan);
+  const result = compileProject({ projectPath: join(tempDirectory, 'tsconfig.json'), workingDirectory: tempDirectory });
+  assertEquals(manifest.familyRequirements.map(r => r.family).includes('set'), true);
+  assertEquals(plan.functionPlans.every(f => f.bodyStatus === 'emittable'), true);
+  assertEquals(wat.includes('jspi'), false);
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(result.artifacts?.backend, 'wasm-gc');
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
+});
+
+Deno.test('compileProject selects source-hir for discriminated union narrowing', async () => {
+  const tempDirectory = await createTempProject([
+    { path: 'tsconfig.json', contents: JSON.stringify({ compilerOptions: { strict: true, noEmit: true, target: 'ES2022', module: 'ESNext', lib: ['ES2022'] }, include: ['src/**/*.ts'], soundscript: { target: 'wasm-node' } }, null, 2) },
+    { path: 'src/index.ts', contents: `type Circle = { kind: string, radius: number }; type Square = { kind: string, side: number }; export function area(shape: Circle | Square): number { if (shape.kind === "circle") { return shape.radius; } return shape.side; }` },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const plan = createWasmGcModulePlan(semantic, createRuntimeManifestFromSemanticModule(semantic));
+  assertEquals(plan.functionPlans.every(f => f.bodyStatus === 'emittable'), true);
+  const wat = emitWasmGcModulePlan(plan);
+  assertEquals(wat.includes('jspi'), false);
 });
 
 Deno.test('compiler SourceHIR semantic lowering preserves primitive structured control flow', async () => {

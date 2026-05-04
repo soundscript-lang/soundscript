@@ -1,35 +1,19 @@
+export type WasmGcCutoverFamilyId = typeof WASM_GC_CORE_GATE_FAMILIES[number];
+
 export type WasmGcCutoverStatus =
   | 'legacy-only'
   | 'ir-shadowed'
-  | 'wasm-gc-emittable'
-  | 'explicit-diagnostic-needed';
-
-export type WasmGcCoreGateFamily =
-  | 'primitives'
-  | 'control_flow'
-  | 'locals'
-  | 'strings'
-  | 'arrays'
-  | 'objects'
-  | 'closures'
-  | 'classes'
-  | 'constructors'
-  | 'unions'
-  | 'map_set'
-  | 'promises'
-  | 'generators'
-  | 'async_frames'
-  | 'errors'
-  | 'try_catch_finally';
+  | 'explicit-diagnostic-needed'
+  | 'wasm-gc-emittable';
 
 export interface WasmGcCutoverInventoryEntry {
-  family: WasmGcCoreGateFamily;
+  family: WasmGcCutoverFamilyId;
   status: WasmGcCutoverStatus;
   focusedGate: string;
   nextCutoverStep: string;
 }
 
-export const WASM_GC_CORE_GATE_FAMILIES: readonly WasmGcCoreGateFamily[] = [
+export const WASM_GC_CORE_GATE_FAMILIES = [
   'primitives',
   'control_flow',
   'locals',
@@ -46,55 +30,61 @@ export const WASM_GC_CORE_GATE_FAMILIES: readonly WasmGcCoreGateFamily[] = [
   'async_frames',
   'errors',
   'try_catch_finally',
-];
+] as const;
 
 export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntry[] = [
   {
     family: 'primitives',
     status: 'wasm-gc-emittable',
     focusedGate:
-      'compiler SourceHIR semantic lowering captures primitive function bodies without legacy IR',
+      'compileProject selects source-hir wasm-gc for pure core scalar modules with manifest familyRequirements',
     nextCutoverStep: 'Route public pure-core primitive compiles through the SourceHIR WasmGC plan.',
   },
   {
     family: 'control_flow',
     status: 'wasm-gc-emittable',
-    focusedGate: 'compiler SourceHIR semantic lowering preserves primitive structured control flow',
+    focusedGate:
+      'compileProject selects source-hir wasm-gc for pure core scalar modules with manifest familyRequirements',
     nextCutoverStep:
       'Keep structured control-flow lowering on SourceHIR SemanticIR and add legacy-free compileProject assertions.',
   },
   {
     family: 'locals',
     status: 'wasm-gc-emittable',
-    focusedGate: 'compiler SourceHIR semantic lowering preserves primitive structured control flow',
+    focusedGate:
+      'compileProject selects source-hir wasm-gc for pure core scalar modules with manifest familyRequirements',
     nextCutoverStep:
       'Expand direct SourceHIR local representation coverage before deleting legacy local lowering.',
   },
   {
     family: 'strings',
     status: 'wasm-gc-emittable',
-    focusedGate: 'compiler SourceHIR semantic lowering emits runnable parenthesized expressions',
+    focusedGate:
+      'compileProject selects source-hir wasm-gc for pure string array and object bodies with manifest familyRequirements',
     nextCutoverStep:
       'Keep owned string helpers manifest-gated and move remaining string operations off legacy WAT helpers.',
   },
   {
     family: 'arrays',
     status: 'wasm-gc-emittable',
-    focusedGate: 'compiler SourceHIR semantic lowering emits runnable array element reads',
+    focusedGate:
+      'compileProject selects source-hir wasm-gc for pure string array and object bodies with manifest familyRequirements',
     nextCutoverStep:
       'Use recursive value storage plans for all array payloads before deleting legacy array lowering.',
   },
   {
     family: 'objects',
     status: 'wasm-gc-emittable',
-    focusedGate: 'compiler SourceHIR semantic lowering emits runnable object result destructuring',
+    focusedGate:
+      'compileProject selects source-hir wasm-gc for pure string array and object bodies with manifest familyRequirements',
     nextCutoverStep:
       'Move remaining object-only legacy cleanup to deletion gates and keep recursive value-boundary storage as the source of truth.',
   },
   {
     family: 'closures',
     status: 'wasm-gc-emittable',
-    focusedGate: 'compiler SourceHIR semantic lowering emits runnable closure function results',
+    focusedGate:
+      'compileProject selects source-hir wasm-gc for no-capture closure bodies with manifest familyRequirements',
     nextCutoverStep:
       'Handle multi-signature closure diagnostics and delete legacy closure compatibility paths.',
   },
@@ -102,7 +92,7 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
     family: 'classes',
     status: 'wasm-gc-emittable',
     focusedGate:
-      'compiler SourceHIR semantic lowering emits runnable class instance function results',
+      'compileProject selects source-hir wasm-gc for class field bodies with manifest familyRequirements',
     nextCutoverStep:
       'Finish unsupported class surfaces deliberately: heritage, private state, computed members, accessors, and static blocks.',
   },
@@ -110,7 +100,7 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
     family: 'constructors',
     status: 'wasm-gc-emittable',
     focusedGate:
-      'compileProject selects the source-hir wasm-gc plan for direct class construction expressions',
+      'compileProject selects the source-hir wasm-gc plan for direct class construction expressions with manifest familyRequirements',
     nextCutoverStep:
       'Promote constructor values from alias metadata into explicit SemanticIR values before deleting legacy constructor paths.',
   },
@@ -118,16 +108,17 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
     family: 'unions',
     status: 'wasm-gc-emittable',
     focusedGate:
-      'compiler SourceHIR semantic lowering emits runnable mixed scalar union typeof checks',
+      'compileProject selects source-hir wasm-gc for discriminated union narrowing and tagged union property access',
     nextCutoverStep:
-      'Extend direct SourceHIR union narrowing through object, collection, closure, and async payloads before deleting legacy union helpers.',
+      'Add union in-check narrowing, collection and closure union narrowing, and compileProject boundary surface support for object unions.',
   },
   {
     family: 'map_set',
     status: 'wasm-gc-emittable',
-    focusedGate: 'compiler SourceHIR semantic lowering emits runnable Set mutation flow',
+    focusedGate:
+      'compileProject selects source-hir wasm-gc for for-of over Map.values() and Set.values() with manifest familyRequirements',
     nextCutoverStep:
-      'Extend direct collection lowering through iterators and nested collection payloads before deleting legacy collection operations.',
+      'Add map.keys(), map.entries(), set.entries() iterators; extend nested collection payload iteration.',
   },
   {
     family: 'promises',
@@ -147,23 +138,25 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
   },
   {
     family: 'async_frames',
-    status: 'ir-shadowed',
-    focusedGate: 'compiler wasm-gc emitter runs async frame resume smoke cases',
+    status: 'wasm-gc-emittable',
+    focusedGate:
+      'compileProject selects source-hir wasm-gc for internal async with nested await, catch, finally, and zero host bridge helpers (promise chain model supersedes legacy async frame state machine)',
     nextCutoverStep:
-      'Route async generator and async frame lowering through source-owned generator frame plan once sync generators are stable.',
+      'Delete legacy async frame state machine from lower.ts once all async patterns are verified through source-hir promise chain lowering.',
   },
   {
     family: 'errors',
     status: 'wasm-gc-emittable',
     focusedGate:
-      'compiler SourceHIR semantic lowering projects caught builtin Error bindings into object params',
+      'compileProject selects source-hir wasm-gc for async catch body throws and rethrows with manifest familyRequirements',
     nextCutoverStep:
       'Convert remaining accepted Error edge cases into explicit target-aware diagnostics and delete replaced legacy error paths.',
   },
   {
     family: 'try_catch_finally',
     status: 'wasm-gc-emittable',
-    focusedGate: 'compiler SourceHIR semantic lowering runs finally before catch rethrows',
+    focusedGate:
+      'compileProject selects source-hir wasm-gc for async try-catch-finally fulfillment and rejection with manifest familyRequirements',
     nextCutoverStep:
       'Convert remaining complex try/catch/finally shapes into explicit target-aware diagnostics and then delete replaced legacy completion paths.',
   },

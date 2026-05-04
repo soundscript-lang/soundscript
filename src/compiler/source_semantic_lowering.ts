@@ -2443,6 +2443,43 @@ function lowerUnionBinaryExpression(
       representation: 'i32',
     };
   }
+  if (
+    expression.left.kind === 'property_access' &&
+    expression.right.kind === 'literal' &&
+    expression.right.literalKind === 'string' &&
+    sourceExpressionHasTaggedUnionRepresentation(expression.left.object, context)
+  ) {
+    const object = lowerExpression(expression.left.object, context);
+    if (object.representation !== 'tagged_ref') return undefined;
+    const propValue = lowerExpression(expression.left, context);
+    if (propValue.representation !== 'tagged_ref') return undefined;
+    const taggedValue = lowerExpression(expression.left.object, context);
+    if (taggedValue.representation !== 'tagged_ref') return undefined;
+    context.runtimeFamilies.add('finite_union');
+    context.runtimeFamilies.add('dynamic_object');
+    context.runtimeFamilies.add('string');
+    const property = expression.left.property as string;
+    const untaggedName = nextTempLocalName(context, 'discrim_untagged');
+    addLocal(context, untaggedName, 'heap_ref');
+    const keyName = nextTempLocalName(context, 'discrim_key');
+    addLocal(context, keyName, 'owned_string_ref');
+    const fieldName = nextTempLocalName(context, 'discrim_field');
+    addLocal(context, fieldName, 'tagged_ref');
+    const repName = registerDynamicObjectLayout(context, 'union_discriminant');
+    context.pendingStatements.push(
+      { kind: 'local_set', name: untaggedName, value: { kind: 'untag_heap_object', value: taggedValue, representation: 'heap_ref' } },
+      { kind: 'local_set', name: keyName, value: { kind: 'owned_string_literal', literalId: getStringLiteralId(context, property), representation: 'owned_string_ref' } },
+      { kind: 'dynamic_object_property_get', targetName: fieldName, objectName: untaggedName, representationName: repName, propertyKeyName: keyName, valueType: 'tagged_ref' },
+    );
+    const expectedTag = getStringLiteralId(context, expression.right.text) + 1000;
+    return {
+      kind: 'tagged_has_tag',
+      value: { kind: 'local_get', name: fieldName, representation: 'tagged_ref' },
+      tag: expectedTag,
+      negated,
+      representation: 'i32',
+    };
+  }
   return undefined;
 }
 
@@ -3125,6 +3162,20 @@ function lowerExpression(
         }
       }
       const object = lowerExpression(expression.object, context);
+      if (
+        expression.object.kind === 'identifier' &&
+        object.representation === 'tagged_ref' &&
+        context.unionLocals.has(expression.object.name)
+      ) {
+        const field = lowerUnionObjectPropertyAccess(
+          expression.object.name,
+          expression.property,
+          context,
+        );
+        if (field) {
+          return field;
+        }
+      }
       const objectLayout = objectLocalInfoForRead(expression.object, object, context);
       if (objectLayout) {
         const materialized = materializeObjectExpressionForRead(
@@ -3468,6 +3519,241 @@ function lowerExpression(
     default:
       context.unsupportedKinds.add(expression.kind);
       return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+}
+
+function lowerForOfStatement(
+  statement: Extract<SourceStatementIR, { kind: 'for_of' }>,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  if (statement.await || statement.left.kind !== 'identifier_binding') {
+    return undefined;
+  }
+  const iterableExpr = statement.right;
+  if (iterableExpr.kind === 'call_expression' &&
+    iterableExpr.callee.kind === 'property_access' &&
+    iterableExpr.callee.object.kind === 'identifier') {
+    const objectName = iterableExpr.callee.object.name;
+    const methodName = iterableExpr.callee.property;
+    if ((methodName === 'values' || methodName === 'keys') && iterableExpr.args.length === 0) {
+      const mapLocal = context.mapLocals.get(objectName);
+      if (mapLocal) {
+        return emitMapSetForOfIteration(
+          statement,
+          context,
+          objectName,
+          methodName === 'keys' ? 'map_keys' : 'map_values',
+          mapLocal.valueRepresentation,
+        );
+      }
+      const setLocal = context.setLocals.get(objectName);
+      if (setLocal) {
+        return emitMapSetForOfIteration(
+          statement,
+          context,
+          objectName,
+          'set_values',
+          setLocal.valuesElementType,
+        );
+      }
+    }
+  }
+  if (iterableExpr.kind === 'identifier') {
+    const mapLocal = context.mapLocals.get(iterableExpr.name);
+    if (mapLocal) {
+      return emitMapSetForOfIteration(
+        statement,
+        context,
+        iterableExpr.name,
+        'map_values',
+        mapLocal.valueRepresentation,
+      );
+    }
+    const setLocal = context.setLocals.get(iterableExpr.name);
+    if (setLocal) {
+      return emitMapSetForOfIteration(
+        statement,
+        context,
+        iterableExpr.name,
+        'set_values',
+        setLocal.valuesElementType,
+      );
+    }
+  }
+  return lowerArrayForOfStatement(statement, context);
+}
+
+function emitMapSetForOfIteration(
+  statement: Extract<SourceStatementIR, { kind: 'for_of' }>,
+  context: FunctionLoweringContext,
+  objectName: string,
+  stmtKind: string,
+  elementType: CompilerValueType,
+): readonly SemanticStatementIR[] | undefined {
+  const arrayName = nextTempLocalName(context, 'for_of_map_values');
+  context.runtimeFamilies.add('array');
+  let arrayType = elementTypeToArrayType(elementType);
+  addLocal(context, arrayName, arrayType);
+  const leadingStatements = takePendingStatements(context);
+  const extractionStmt: SemanticStatementIR = stmtKind === 'map_keys'
+    ? {
+      kind: 'map_keys',
+      targetName: arrayName,
+      objectName,
+    }
+    : stmtKind === 'map_values'
+    ? {
+      kind: 'map_values',
+      targetName: arrayName,
+      objectName,
+      resultType: arrayType,
+      resultElementType: elementType,
+    }
+    : {
+      kind: 'set_values',
+      targetName: arrayName,
+      objectName,
+      valuesArrayType: arrayType,
+    };
+  return lowerArrayForOfStatementFromArray(
+    statement,
+    context,
+    arrayName,
+    arrayType,
+    elementType,
+    [...leadingStatements, extractionStmt],
+  );
+}
+
+function elementTypeToArrayType(elementType: CompilerValueType): CompilerValueType {
+  if (elementType === 'f64') return 'owned_number_array_ref';
+  if (elementType === 'i32') return 'owned_boolean_array_ref';
+  if (elementType === 'owned_string_ref') return 'owned_array_ref';
+  if (elementType === 'heap_ref') return 'owned_heap_array_ref';
+  return 'owned_tagged_array_ref';
+}
+
+function lowerArrayForOfStatementFromArray(
+  statement: Extract<SourceStatementIR, { kind: 'for_of' }>,
+  context: FunctionLoweringContext,
+  arrayName: string,
+  arrayRepresentation: CompilerValueType,
+  elementRepresentation: CompilerValueType,
+  precedingStatements: readonly SemanticStatementIR[],
+): readonly SemanticStatementIR[] {
+  const lengthName = nextTempLocalName(context, 'for_of_length');
+  const indexName = nextTempLocalName(context, 'for_of_index');
+  addLocal(context, lengthName, 'f64');
+  addLocal(context, indexName, 'f64');
+  addLocal(context, statement.left.name, elementRepresentation);
+  const array: SemanticExpressionIR = {
+    kind: 'local_get',
+    name: arrayName,
+    representation: arrayRepresentation,
+  };
+  const index: SemanticExpressionIR = {
+    kind: 'local_get',
+    name: indexName,
+    representation: 'f64',
+  };
+  const value = arrayElementExpressionForFlatRead(array, index, elementRepresentation, context);
+  if (!value) {
+    return undefined as unknown as readonly SemanticStatementIR[];
+  }
+  return [
+    ...precedingStatements,
+    { kind: 'local_set', name: arrayName, value: array },
+    {
+      kind: 'local_set',
+      name: lengthName,
+      value: {
+        kind: 'owned_array_length',
+        value: array,
+        representation: 'f64',
+      },
+    },
+    {
+      kind: 'local_set',
+      name: indexName,
+      value: { kind: 'number_literal', value: 0, representation: 'f64' },
+    },
+    {
+      kind: 'while',
+      condition: {
+        kind: 'binary',
+        op: 'f64.lt',
+        left: index,
+        right: {
+          kind: 'local_get',
+          name: lengthName,
+          representation: 'f64',
+        },
+        representation: 'i32',
+      },
+      body: [
+        { kind: 'local_set', name: statement.left.name, value },
+        ...statement.body.flatMap((child) => [...lowerStatement(child, context)]),
+        {
+          kind: 'local_set',
+          name: indexName,
+          value: {
+            kind: 'binary',
+            op: 'f64.add',
+            left: index,
+            right: { kind: 'number_literal', value: 1, representation: 'f64' },
+            representation: 'f64',
+          },
+        },
+      ],
+    },
+  ];
+}
+
+function arrayElementExpressionForFlatRead(
+  array: SemanticExpressionIR,
+  index: SemanticExpressionIR,
+  elementRepresentation: CompilerValueType,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  context.runtimeFamilies.add('finite_union');
+  switch (array.representation) {
+    case 'owned_number_array_ref':
+      return {
+        kind: 'owned_number_array_element',
+        value: array,
+        index,
+        representation: 'f64',
+      };
+    case 'owned_boolean_array_ref':
+      return {
+        kind: 'owned_boolean_array_element',
+        value: array,
+        index,
+        representation: 'i32',
+      };
+    case 'owned_array_ref':
+      return {
+        kind: 'owned_string_array_element',
+        value: array,
+        index,
+        representation: 'owned_string_ref',
+      };
+    case 'owned_heap_array_ref':
+      return {
+        kind: 'owned_heap_array_element',
+        value: array,
+        index,
+        representation: 'heap_ref',
+      };
+    case 'owned_tagged_array_ref':
+      return {
+        kind: 'owned_tagged_array_element',
+        value: array,
+        index,
+        representation: 'tagged_ref',
+      };
+    default:
+      return undefined;
   }
 }
 
@@ -4120,6 +4406,50 @@ function objectPropertyReadValueFromLocal(
   };
 }
 
+function lowerUnionObjectPropertyAccess(
+  localName: string,
+  property: string,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  const untaggedName = nextTempLocalName(context, `union_untagged_${localName}`);
+  addLocal(context, untaggedName, 'heap_ref');
+  const untagValue: SemanticExpressionIR = {
+    kind: 'untag_heap_object',
+    value: { kind: 'local_get', name: localName, representation: 'tagged_ref' },
+    representation: 'heap_ref',
+  };
+  const fieldName = nextTempLocalName(context, `union_field_${localName}_${property}`);
+  addLocal(context, fieldName, 'tagged_ref');
+  const repName = registerDynamicObjectLayout(context, 'union_discriminant');
+  const keyName = nextTempLocalName(context, `union_key_${property}`);
+  addLocal(context, keyName, 'owned_string_ref');
+  const keyStmt: SemanticStatementIR = {
+    kind: 'local_set',
+    name: keyName,
+    value: {
+      kind: 'owned_string_literal',
+      literalId: getStringLiteralId(context, property),
+      representation: 'owned_string_ref',
+    },
+  };
+  context.pendingStatements.push(
+    { kind: 'local_set', name: untaggedName, value: untagValue },
+    keyStmt,
+    {
+      kind: 'dynamic_object_property_get',
+      targetName: fieldName,
+      objectName: untaggedName,
+      representationName: repName,
+      propertyKeyName: keyName,
+      valueType: 'tagged_ref',
+    },
+  );
+  context.runtimeFamilies.add('finite_union');
+  context.runtimeFamilies.add('dynamic_object');
+  context.runtimeFamilies.add('string');
+  return { kind: 'local_get', name: fieldName, representation: 'tagged_ref' };
+}
+
 function lowerObjectPropertyReadFromLocal(
   objectName: string,
   propertyName: string,
@@ -4257,6 +4587,34 @@ function lowerMapMethodCallExpression(
     context.runtimeFamilies.add('finite_union');
     return localGetExpression(targetName, 'tagged_ref');
   }
+  if (methodName === 'keys' && args.length === 0) {
+    const targetName = nextTempLocalName(context, `map_keys_${objectName}`);
+    addLocal(context, targetName, 'owned_array_ref');
+    context.pendingStatements.push({
+      kind: 'map_keys',
+      targetName,
+      objectName,
+    });
+    context.runtimeFamilies.add('map');
+    context.runtimeFamilies.add('string');
+    context.runtimeFamilies.add('array');
+    return localGetExpression(targetName, 'owned_array_ref');
+  }
+  if (methodName === 'values' && args.length === 0) {
+    const targetName = nextTempLocalName(context, `map_values_${objectName}`);
+    addLocal(context, targetName, 'owned_tagged_array_ref');
+    context.pendingStatements.push({
+      kind: 'map_values',
+      targetName,
+      objectName,
+      resultType: 'owned_tagged_array_ref',
+      resultElementType: mapLocal.valueRepresentation,
+    });
+    context.runtimeFamilies.add('map');
+    context.runtimeFamilies.add('finite_union');
+    context.runtimeFamilies.add('array');
+    return localGetExpression(targetName, 'owned_tagged_array_ref');
+  }
   return undefined;
 }
 
@@ -4328,6 +4686,19 @@ function lowerSetMethodCallExpression(
     context.runtimeFamilies.add('set');
     context.runtimeFamilies.add('array');
     return localGetExpression(targetName, 'tagged_ref');
+  }
+  if ((methodName === 'values' || methodName === 'keys') && args.length === 0) {
+    const targetName = nextTempLocalName(context, `set_values_${objectName}`);
+    addLocal(context, targetName, setLocal.valuesArrayType);
+    context.pendingStatements.push({
+      kind: 'set_values',
+      targetName,
+      objectName,
+      valuesArrayType: setLocal.valuesArrayType,
+    });
+    context.runtimeFamilies.add('set');
+    context.runtimeFamilies.add('array');
+    return localGetExpression(targetName, setLocal.valuesArrayType);
   }
   return undefined;
 }
@@ -7547,7 +7918,7 @@ function lowerStatement(
     case 'try':
       return lowerTryStatement(statement, context);
     case 'for_of': {
-      const lowered = lowerArrayForOfStatement(statement, context);
+      const lowered = lowerForOfStatement(statement, context);
       if (lowered) {
         return lowered;
       }
