@@ -97,8 +97,16 @@ Deno.test('console module forwards to a stable console surface', () => {
 
 Deno.test('crypto helpers digest hmac random and compare bytes', async () => {
   const input = Bytes.fromString('soundscript');
+  const padded = Bytes.fromString('__soundscript__');
+  const inputView = Bytes.view(padded.buffer, { byteOffset: 2, byteLength: input.byteLength });
   const digest = await Crypto.digest('SHA-256', input);
+  const viewDigest = await Crypto.digest('SHA-256', inputView);
   const hmac = await Crypto.hmac('SHA-256', Bytes.fromString('key'), input);
+  const viewHmac = await Crypto.hmac(
+    'SHA-256',
+    Bytes.fromString('__key__').subarray(2, 5),
+    inputView,
+  );
   const submoduleDigest = await Digest.digest('SHA-256', input);
   const submoduleHmac = await Hmac.hmac('SHA-256', Bytes.fromString('key'), input);
   const random = Crypto.randomBytes(16);
@@ -113,6 +121,8 @@ Deno.test('crypto helpers digest hmac random and compare bytes', async () => {
     hmac.tag === 'ok' ? toHex(hmac.value) : undefined,
     '1cbabb825d89715618fed01085095c8d137c396058db97a715c328f138f28ff8',
   );
+  assertEquals(viewDigest, digest);
+  assertEquals(viewHmac, hmac);
   assertEquals(submoduleDigest, digest);
   assertEquals(submoduleHmac, hmac);
   assertEquals(random.tag, 'ok');

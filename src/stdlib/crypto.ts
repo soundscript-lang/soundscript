@@ -1,6 +1,6 @@
 import { type AsyncResult } from 'sts:concurrency/task';
 import { UnsupportedCapabilityFailure } from 'sts:capabilities';
-import { type Bytes } from 'sts:bytes';
+import { type Bytes, Bytes as BytesApi } from 'sts:bytes';
 import { Failure, normalizeThrown } from 'sts:failures';
 import { randomBytes as randomBytesFromProvider } from 'sts:random';
 import { err, ok, type Result } from 'sts:result';
@@ -38,12 +38,6 @@ function algorithmName(algorithm: DigestAlgorithm): string {
   return algorithm;
 }
 
-function arrayBufferFromBytes(bytes: Bytes): ArrayBuffer {
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  return copy.buffer;
-}
-
 export async function digest(
   algorithm: DigestAlgorithm,
   data: Bytes,
@@ -54,7 +48,7 @@ export async function digest(
   }
 
   try {
-    const bytes = await subtle.value.digest(algorithmName(algorithm), arrayBufferFromBytes(data));
+    const bytes = await subtle.value.digest(algorithmName(algorithm), BytesApi.toArrayBuffer(data));
     return ok(new Uint8Array(bytes));
   } catch (error) {
     return err(failureFromUnknown(error));
@@ -74,12 +68,12 @@ export async function hmac(
   try {
     const cryptoKey = await subtle.value.importKey(
       'raw',
-      arrayBufferFromBytes(key),
+      BytesApi.toArrayBuffer(key),
       { name: 'HMAC', hash: { name: algorithmName(algorithm) } },
       false,
       ['sign'],
     );
-    const signature = await subtle.value.sign('HMAC', cryptoKey, arrayBufferFromBytes(data));
+    const signature = await subtle.value.sign('HMAC', cryptoKey, BytesApi.toArrayBuffer(data));
     return ok(new Uint8Array(signature));
   } catch (error) {
     return err(failureFromUnknown(error));
