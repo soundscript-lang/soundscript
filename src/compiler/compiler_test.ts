@@ -1330,11 +1330,11 @@ compilerIntegrationTest(
       {
         path: 'src/index.ts',
         contents: [
-          "import { getRandomValues } from 'sts:random';",
+          "import { randomBytes } from 'sts:random';",
           '',
-          'export function main(): Uint8Array<ArrayBuffer> {',
-          '  const box = { value: getRandomValues(new Uint8Array(1)) };',
-          '  return box.value;',
+          'export function main(): number {',
+          '  const box = { value: randomBytes(1) };',
+          '  return box.value.tag === "ok" ? box.value.value.byteLength : 0;',
           '}',
           '',
         ].join('\n'),

@@ -76,7 +76,8 @@ The stable `sts:*` surface stays focused and composable.
 - `sts:typeclasses` owns `Functor`, `Applicative`, `Monad`, `AsyncMonad`, and `Do`.
 - `sts:url`, `sts:fetch`, `sts:streams`, `sts:text`, `sts:random`, and `sts:crypto` are the initial
   portable leaf modules. `sts:crypto/digest` and `sts:crypto/hmac` provide narrower crypto entry
-  points; key-management APIs are still deferred.
+  points; key-management APIs are still deferred. `sts:random` exposes result-returning portable
+  helpers, not raw `crypto` or `getRandomValues` host exports.
 
 If you are deciding where a helper should live, prefer the narrowest leaf module that honestly
 matches the ownership boundary.

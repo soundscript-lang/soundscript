@@ -1,34 +1,15 @@
 import { type Bytes } from 'sts:bytes';
+import { UnsupportedCapabilityFailure } from 'sts:capabilities';
 import { Failure, normalizeThrown } from 'sts:failures';
 import { err, ok, type Result } from 'sts:result';
 
-type RandomBufferView =
-  | Int8Array<ArrayBufferLike>
-  | Uint8Array<ArrayBufferLike>
-  | Uint8ClampedArray<ArrayBufferLike>
-  | Int16Array<ArrayBufferLike>
-  | Uint16Array<ArrayBufferLike>
-  | Int32Array<ArrayBufferLike>
-  | Uint32Array<ArrayBufferLike>
-  | BigInt64Array<ArrayBufferLike>
-  | BigUint64Array<ArrayBufferLike>
-  | Float32Array<ArrayBufferLike>
-  | Float64Array<ArrayBufferLike>;
-
-export interface CryptoLike {
-  // #[effects(add: [host.random, mut])]
-  getRandomValues<T extends DataView<ArrayBufferLike> | RandomBufferView>(array: T): T;
-  // #[effects(add: [host.random])]
+interface RandomProvider {
+  getRandomValues<T extends Uint8Array<ArrayBufferLike>>(array: T): T;
   randomUUID?(): string;
 }
 
-export const crypto: CryptoLike = globalThis.crypto;
-
-// #[effects(add: [host.random, mut])]
-export function getRandomValues<T extends DataView<ArrayBufferLike> | RandomBufferView>(
-  array: T,
-): T {
-  return crypto.getRandomValues(array);
+function provider(): RandomProvider | undefined {
+  return (globalThis as typeof globalThis & { crypto?: RandomProvider }).crypto;
 }
 
 function failureFromUnknown(value: unknown): Failure {
@@ -39,30 +20,55 @@ function failureFromUnknown(value: unknown): Failure {
   return new Failure(normalized.message, { cause: normalized });
 }
 
-function fillRandomBytes(bytes: Uint8Array<ArrayBufferLike>): void {
+function requireRandomProvider(): Result<RandomProvider, Failure> {
+  const randomProvider = provider();
+  return randomProvider ? ok(randomProvider) : err(
+    new UnsupportedCapabilityFailure(
+      'crypto.random',
+      'global crypto is not available',
+    ),
+  );
+}
+
+function fillRandomBytes(
+  randomProvider: RandomProvider,
+  bytes: Uint8Array<ArrayBufferLike>,
+): void {
   const chunkLength = 65_536;
   for (let offset = 0; offset < bytes.byteLength; offset += chunkLength) {
-    crypto.getRandomValues(bytes.subarray(offset, offset + chunkLength));
+    randomProvider.getRandomValues(bytes.subarray(offset, offset + chunkLength));
   }
 }
 
+// #[effects(add: [host.random, mut])]
 export function randomBytes(length: number): Result<Bytes, Failure> {
   if (!Number.isSafeInteger(length) || length < 0) {
     return err(new Failure('Random byte length must be a non-negative safe integer.'));
   }
 
+  const randomProvider = requireRandomProvider();
+  if (randomProvider.tag === 'err') {
+    return randomProvider;
+  }
+
   try {
     const bytes = new Uint8Array(length);
-    fillRandomBytes(bytes);
+    fillRandomBytes(randomProvider.value, bytes);
     return ok(bytes);
   } catch (error) {
     return err(failureFromUnknown(error));
   }
 }
 
+// #[effects(add: [host.random, mut])]
 export function fillRandom(bytes: Uint8Array<ArrayBufferLike>): Result<void, Failure> {
+  const randomProvider = requireRandomProvider();
+  if (randomProvider.tag === 'err') {
+    return randomProvider;
+  }
+
   try {
-    fillRandomBytes(bytes);
+    fillRandomBytes(randomProvider.value, bytes);
     return ok(undefined);
   } catch (error) {
     return err(failureFromUnknown(error));
@@ -73,14 +79,20 @@ function hex(byte: number): string {
   return byte.toString(16).padStart(2, '0');
 }
 
+// #[effects(add: [host.random, mut])]
 export function uuidV4(): Result<string, Failure> {
+  const randomProvider = requireRandomProvider();
+  if (randomProvider.tag === 'err') {
+    return randomProvider;
+  }
+
   try {
-    if (typeof crypto.randomUUID === 'function') {
-      return ok(crypto.randomUUID());
+    if (typeof randomProvider.value.randomUUID === 'function') {
+      return ok(randomProvider.value.randomUUID());
     }
 
     const bytes = new Uint8Array(16);
-    fillRandomBytes(bytes);
+    fillRandomBytes(randomProvider.value, bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
 
@@ -97,8 +109,6 @@ export function uuidV4(): Result<string, Failure> {
 }
 
 export const Random = Object.freeze({
-  crypto,
-  getRandomValues,
   randomBytes,
   fillRandom,
   uuidV4,

@@ -738,7 +738,9 @@ export { TextDecoder, TextEncoder };
 ## `sts:random`
 
 `sts:random` is cryptographic random by default. Deterministic PRNGs should live in a separate
-testing or simulation module later.
+testing or simulation module later. It should expose portable result-returning helpers, not raw
+`crypto` or `getRandomValues` exports; code that needs the Web Crypto object can use the Web global
+surface or an explicit interop import.
 
 ```ts
 export function randomBytes(length: number): Result<Bytes, Failure>;

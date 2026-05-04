@@ -273,7 +273,13 @@ Deno.test('std package support preserves inferred effects in generated debug dec
 });
 
 Deno.test('std package support preserves inferred effects in generated random declarations', () => {
-  assertStringIncludes(RANDOM_STDLIB_DECLARATION_TEXT, '// #[effects(add: [host.random, mut])]');
+  assertStringIncludes(RANDOM_STDLIB_DECLARATION_TEXT, 'host.random, mut');
+  assertStringIncludes(RANDOM_STDLIB_DECLARATION_TEXT, 'export declare function randomBytes');
+  assertStringIncludes(RANDOM_STDLIB_DECLARATION_TEXT, 'export declare function fillRandom');
+  assertStringIncludes(RANDOM_STDLIB_DECLARATION_TEXT, 'export declare function uuidV4');
+  assertEquals(RANDOM_STDLIB_DECLARATION_TEXT.includes('getRandomValues'), false);
+  assertEquals(RANDOM_STDLIB_DECLARATION_TEXT.includes('CryptoLike'), false);
+  assertEquals(RANDOM_STDLIB_DECLARATION_TEXT.includes('export declare const crypto'), false);
 });
 
 Deno.test('std package support projects generated Task object declarations', () => {
