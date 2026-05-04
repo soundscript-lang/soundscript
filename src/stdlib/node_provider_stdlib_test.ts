@@ -271,11 +271,13 @@ Deno.test('node provider net opens TLS loopback streams', async () => {
   }
 });
 
-Deno.test('node provider cli exposes arguments and terminal metadata through Result', () => {
+Deno.test('node provider cli exposes arguments and terminal IO through Result', async () => {
   assertEquals(Cli.args().tag, 'ok');
   assertEquals(Cli.stdio().tag, 'ok');
   assertEquals(Cli.isTerminal('stdout').tag, 'ok');
   assertEquals(Cli.terminalSize().tag, 'ok');
+  assertEquals((await Cli.write('', { stream: 'stderr' })).tag, 'ok');
+  assertEquals((await Cli.writeLine('')).tag, 'ok');
   assertEquals(hasCapability('cli.args'), true);
   assertEquals(hasCapability('cli.stdio'), true);
 });

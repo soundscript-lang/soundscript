@@ -167,18 +167,6 @@ export async function writeLine(
   return await write(`${text}\n`, options);
 }
 
-export function readStdinText(): Promise<Result<string, Failure>> {
-  return new Promise((resolve) => {
-    let text = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk) => {
-      text += chunk;
-    });
-    process.stdin.on('end', () => resolve(ok(text)));
-    process.stdin.on('error', (error) => resolve(err(failureFromUnknown(error))));
-  });
-}
-
 export const Cli = Object.freeze({
   args,
   stdio,
@@ -187,5 +175,4 @@ export const Cli = Object.freeze({
   readLine,
   write,
   writeLine,
-  readStdinText,
 });

@@ -317,6 +317,9 @@ Deno.test('std package support projects generated Task object declarations', () 
   assertStringIncludes(CLI_STDLIB_DECLARATION_TEXT, 'export declare function args');
   assertStringIncludes(CLI_STDLIB_DECLARATION_TEXT, 'export declare function stdio');
   assertStringIncludes(CLI_STDLIB_DECLARATION_TEXT, 'export declare function terminalSize');
+  assertStringIncludes(CLI_STDLIB_DECLARATION_TEXT, 'export declare function readLine');
+  assertStringIncludes(CLI_STDLIB_DECLARATION_TEXT, 'export declare function writeLine');
+  assertEquals(CLI_STDLIB_DECLARATION_TEXT.includes('readStdinText'), false);
   assertStringIncludes(PROCESS_STDLIB_DECLARATION_TEXT, 'export declare function info');
   assertStringIncludes(PROCESS_STDLIB_DECLARATION_TEXT, 'export declare class Child');
   assertStringIncludes(PROCESS_STDLIB_DECLARATION_TEXT, 'export declare function spawn');
