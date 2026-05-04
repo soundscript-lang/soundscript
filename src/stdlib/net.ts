@@ -168,8 +168,12 @@ function tlsServerOptions(options: TlsListenOptions): NodeTlsOptions {
 
 export async function lookupHost(
   hostname: string,
-  _options: OperationOptions = {},
+  options: OperationOptions = {},
 ): AsyncResult<readonly IpAddress[], Failure> {
+  if (options.signal?.aborted) {
+    return err(cancellationFailure(options.signal));
+  }
+
   try {
     const results = await nodeLookup(hostname, { all: true });
     return ok(results.map((result) => result.address));

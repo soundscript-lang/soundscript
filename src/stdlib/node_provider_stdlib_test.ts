@@ -207,6 +207,15 @@ Deno.test('node provider net opens TCP loopback streams', async () => {
   }
 });
 
+Deno.test('node provider DNS honors pre-aborted signals', async () => {
+  const controller = new AbortController();
+  controller.abort(new Failure('stop'));
+
+  const result = await Net.lookupHost('localhost', { signal: controller.signal });
+
+  assertEquals(result.tag, 'err');
+});
+
 Deno.test('node provider net opens TLS loopback streams', async () => {
   const listener = await Net.listenTls({
     cert: TEST_TLS_CERT,
