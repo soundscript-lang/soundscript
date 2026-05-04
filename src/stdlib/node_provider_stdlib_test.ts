@@ -68,6 +68,9 @@ Deno.test('node provider fs reads and writes AsyncResult values', async () => {
     assertEquals(noCreate.tag, 'err');
     assertEquals(noTruncate.tag === 'ok' ? noTruncate.value : undefined, 'xycdef');
     assertEquals(latin1.tag === 'ok' ? [...latin1.value] : undefined, [233]);
+    assertEquals(hasCapability('fs.read'), true);
+    assertEquals(hasCapability('fs.write'), true);
+    assertEquals(hasCapability('fs.metadata'), true);
   } finally {
     await Deno.remove(tempDirectory, { recursive: true });
   }
@@ -85,6 +88,10 @@ Deno.test('node provider env and process expose host state through Result', () =
   assertEquals(Env.remove(variable).tag, 'ok');
   assertEquals(Process.cwd().tag, 'ok');
   assertEquals(Process.info().tag, 'ok');
+  assertEquals(hasCapability('env.read'), true);
+  assertEquals(hasCapability('env.write'), true);
+  assertEquals(hasCapability('process.cwd'), true);
+  assertEquals(hasCapability('process.info'), true);
   assertEquals(hasCapability('process.child'), true);
 });
 
@@ -121,11 +128,14 @@ Deno.test('node provider process runs child commands and exposes piped output', 
   assertEquals(text?.tag === 'ok' ? text.value : undefined, 'spawned\n');
   assertEquals(status.tag === 'ok' ? status.value.success : undefined, true);
   assertEquals(cachedStatus.tag === 'ok' ? cachedStatus.value.success : undefined, true);
+  assertEquals(hasCapability('process.spawn'), true);
 });
 
 Deno.test('node provider process submodules expose focused helper objects', () => {
   assertEquals(commandOutput, Command.output);
   assertEquals(onProcessSignal, Signals.onSignal);
+  assertEquals(hasCapability('process.command'), true);
+  assertEquals(hasCapability('process.signal'), true);
 });
 
 Deno.test('node provider net resolves localhost', async () => {
@@ -266,6 +276,8 @@ Deno.test('node provider cli exposes arguments and terminal metadata through Res
   assertEquals(Cli.stdio().tag, 'ok');
   assertEquals(Cli.isTerminal('stdout').tag, 'ok');
   assertEquals(Cli.terminalSize().tag, 'ok');
+  assertEquals(hasCapability('cli.args'), true);
+  assertEquals(hasCapability('cli.stdio'), true);
 });
 
 Deno.test('node provider http serves Web Request and Response handlers', async () => {
@@ -295,6 +307,7 @@ Deno.test('node provider http serves Web Request and Response handlers', async (
   const serving = serverResult.value.serve();
   try {
     const port = await waitForHttpServerPort(serverResult.value);
+    assertEquals(hasCapability('http.server'), true);
     const response = await fetch(`http://127.0.0.1:${port}/hello`);
     const asyncResponse = await fetch(`http://127.0.0.1:${port}/async`);
     const echoResponse = await fetch(`http://127.0.0.1:${port}/echo`, {

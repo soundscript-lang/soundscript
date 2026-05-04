@@ -79,7 +79,13 @@ Deno.test('time helpers expose clocks and cancellable sleep', async () => {
 });
 
 Deno.test('capability manifest exposes known portable modules', () => {
+  assertEquals(hasCapability('platform.url'), true);
   assertEquals(hasCapability('console'), true);
+  assertEquals(hasCapability('bytes'), true);
+  assertEquals(hasCapability('time.clock.wall'), true);
+  assertEquals(hasCapability('time.clock.monotonic'), true);
+  assertEquals(hasCapability('time.timer'), true);
+  assertEquals(hasCapability('crypto'), true);
   assertEquals(hasCapability('crypto.digest'), true);
   assertEquals(requireCapability('console').tag, 'ok');
   assertEquals(requireCapability('__missing__').tag, 'err');

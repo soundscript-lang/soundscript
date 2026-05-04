@@ -33,133 +33,85 @@ function isNodeRuntime(): boolean {
   return typeof runtime.process?.versions?.node === 'string';
 }
 
+function available(name: string): CapabilityInfo {
+  return { name, status: 'available' };
+}
+
+function unavailable(name: string, reason: string): CapabilityInfo {
+  return { name, status: 'unavailable', reason };
+}
+
+function capability(name: string, condition: boolean, reason: string): CapabilityInfo {
+  return condition ? available(name) : unavailable(name, reason);
+}
+
 function defaultManifest(): readonly CapabilityInfo[] {
+  const hasUrl = typeof globalThis.URL === 'function';
   const hasFetch = typeof globalThis.fetch === 'function';
   const hasCrypto = globalThis.crypto !== undefined;
   const hasSubtleCrypto = globalThis.crypto?.subtle !== undefined;
   const hasTextCodec = typeof globalThis.TextEncoder === 'function' &&
     typeof globalThis.TextDecoder === 'function';
+  const hasStreams = typeof globalThis.ReadableStream === 'function' &&
+    typeof globalThis.WritableStream === 'function';
+  const hasTimer = typeof setTimeout === 'function' && typeof clearTimeout === 'function';
+  const hasSharedMemory = typeof SharedArrayBuffer === 'function' &&
+    typeof Atomics === 'object';
   const node = isNodeRuntime();
+  const nodeReason = 'requires a node-family provider';
 
   return [
-    { name: 'platform.console', status: 'available' },
-    {
-      name: 'platform.fetch',
-      status: hasFetch ? 'available' : 'unavailable',
-      reason: hasFetch ? undefined : 'global fetch is not available',
-    },
-    {
-      name: 'platform.streams',
-      status: typeof globalThis.ReadableStream === 'function' &&
-          typeof globalThis.WritableStream === 'function'
-        ? 'available'
-        : 'unavailable',
-      reason: typeof globalThis.ReadableStream === 'function' &&
-          typeof globalThis.WritableStream === 'function'
-        ? undefined
-        : 'Web Streams globals are not available',
-    },
-    {
-      name: 'platform.text',
-      status: hasTextCodec ? 'available' : 'unavailable',
-      reason: hasTextCodec ? undefined : 'TextEncoder or TextDecoder is not available',
-    },
-    {
-      name: 'platform.crypto.random',
-      status: hasCrypto ? 'available' : 'unavailable',
-      reason: hasCrypto ? undefined : 'global crypto is not available',
-    },
-    {
-      name: 'platform.crypto.subtle',
-      status: hasSubtleCrypto ? 'available' : 'unavailable',
-      reason: hasSubtleCrypto ? undefined : 'global crypto.subtle is not available',
-    },
-    { name: 'console', status: 'available' },
-    { name: 'time', status: 'available' },
-    { name: 'path', status: 'available' },
-    {
-      name: 'streams',
-      status: typeof globalThis.ReadableStream === 'function' &&
-          typeof globalThis.WritableStream === 'function'
-        ? 'available'
-        : 'unavailable',
-      reason: typeof globalThis.ReadableStream === 'function' &&
-          typeof globalThis.WritableStream === 'function'
-        ? undefined
-        : 'Web Streams globals are not available',
-    },
-    { name: 'bytes', status: hasTextCodec ? 'available' : 'unavailable' },
-    { name: 'concurrency.task', status: 'available' },
-    {
-      name: 'concurrency.runtime',
-      status: node ? 'available' : 'unavailable',
-      reason: node ? undefined : 'requires a JavaScript host with async context support',
-    },
-    {
-      name: 'fetch',
-      status: hasFetch ? 'available' : 'unavailable',
-      reason: hasFetch ? undefined : 'global fetch is not available',
-    },
-    {
-      name: 'random',
-      status: hasCrypto ? 'available' : 'unavailable',
-      reason: hasCrypto ? undefined : 'global crypto is not available',
-    },
-    {
-      name: 'crypto.digest',
-      status: hasSubtleCrypto ? 'available' : 'unavailable',
-      reason: hasSubtleCrypto ? undefined : 'global crypto.subtle is not available',
-    },
-    {
-      name: 'crypto.hmac',
-      status: hasSubtleCrypto ? 'available' : 'unavailable',
-      reason: hasSubtleCrypto ? undefined : 'global crypto.subtle is not available',
-    },
-    {
-      name: 'fs',
-      status: node ? 'available' : 'unavailable',
-      reason: node ? undefined : 'requires a node-family provider',
-    },
-    {
-      name: 'env',
-      status: node ? 'available' : 'unavailable',
-      reason: node ? undefined : 'requires a node-family provider',
-    },
-    {
-      name: 'cli',
-      status: node ? 'available' : 'unavailable',
-      reason: node ? undefined : 'requires a node-family provider',
-    },
-    {
-      name: 'process',
-      status: node ? 'available' : 'unavailable',
-      reason: node ? undefined : 'requires a node-family provider',
-    },
-    {
-      name: 'process.child',
-      status: node ? 'available' : 'unavailable',
-      reason: node ? undefined : 'requires a node-family provider',
-    },
-    {
-      name: 'net.dns',
-      status: node ? 'available' : 'unavailable',
-      reason: node ? undefined : 'requires a node-family provider',
-    },
-    {
-      name: 'net.tcp',
-      status: node ? 'available' : 'unavailable',
-      reason: node ? undefined : 'requires a node-family provider',
-    },
-    {
-      name: 'net.tls',
-      status: node ? 'available' : 'unavailable',
-      reason: node ? undefined : 'requires a node-family provider',
-    },
-    {
-      name: 'http.server',
-      status: node ? 'available' : 'unavailable',
-      reason: node ? undefined : 'requires a node-family provider',
-    },
+    capability('platform.url', hasUrl, 'URL globals are not available'),
+    available('platform.console'),
+    capability('platform.fetch', hasFetch, 'global fetch is not available'),
+    capability('platform.streams', hasStreams, 'Web Streams globals are not available'),
+    capability('platform.text', hasTextCodec, 'TextEncoder or TextDecoder is not available'),
+    capability('platform.crypto.random', hasCrypto, 'global crypto is not available'),
+    capability('platform.crypto.subtle', hasSubtleCrypto, 'global crypto.subtle is not available'),
+    available('console'),
+    available('time'),
+    available('time.clock.wall'),
+    available('time.clock.monotonic'),
+    capability('time.timer', hasTimer, 'timer globals are not available'),
+    available('path'),
+    available('bytes'),
+    capability('bytes.shared', hasSharedMemory, 'SharedArrayBuffer or Atomics is not available'),
+    available('concurrency.task'),
+    capability(
+      'concurrency.runtime',
+      node,
+      'requires a JavaScript host with async context support',
+    ),
+    capability('fetch', hasFetch, 'global fetch is not available'),
+    capability('streams', hasStreams, 'Web Streams globals are not available'),
+    capability('text', hasTextCodec, 'TextEncoder or TextDecoder is not available'),
+    capability('random', hasCrypto, 'global crypto is not available'),
+    capability('crypto', hasCrypto && hasSubtleCrypto, 'global crypto.subtle is not available'),
+    capability('crypto.random', hasCrypto, 'global crypto is not available'),
+    capability('crypto.digest', hasSubtleCrypto, 'global crypto.subtle is not available'),
+    capability('crypto.hmac', hasSubtleCrypto, 'global crypto.subtle is not available'),
+    capability('fs', node, nodeReason),
+    capability('fs.read', node, nodeReason),
+    capability('fs.write', node, nodeReason),
+    capability('fs.metadata', node, nodeReason),
+    capability('env', node, nodeReason),
+    capability('env.read', node, nodeReason),
+    capability('env.write', node, nodeReason),
+    capability('cli', node, nodeReason),
+    capability('cli.args', node, nodeReason),
+    capability('cli.stdio', node, nodeReason),
+    capability('process', node, nodeReason),
+    capability('process.info', node, nodeReason),
+    capability('process.cwd', node, nodeReason),
+    capability('process.child', node, nodeReason),
+    capability('process.spawn', node, nodeReason),
+    capability('process.command', node, nodeReason),
+    capability('process.signal', node, nodeReason),
+    capability('net', node, nodeReason),
+    capability('net.dns', node, nodeReason),
+    capability('net.tcp', node, nodeReason),
+    capability('net.tls', node, nodeReason),
+    capability('http.server', node, nodeReason),
   ];
 }
 

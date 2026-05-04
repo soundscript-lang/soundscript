@@ -256,6 +256,11 @@ The checker should still reject statically unavailable APIs when the target prof
 cannot exist. Runtime capability queries are for provider-dependent profiles and libraries that can
 honestly offer optional behavior.
 
+The JS provider manifest should report the narrow audit names from the capability list, such as
+`fs.read`, `process.spawn`, `time.timer`, and `http.server`. It may also expose coarse module
+aliases such as `fs`, `process`, `net`, `bytes`, and `crypto` during the pre-v1 buildout so simple
+feature checks stay ergonomic.
+
 ## `sts:url`
 
 `URL` and `URLSearchParams` are Web-standard globals where available. `sts:url` is the explicit
