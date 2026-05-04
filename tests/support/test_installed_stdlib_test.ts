@@ -103,8 +103,12 @@ Deno.test('installed stdlib package exposes runnable stable runtime entrypoints'
 
   assertEquals(packageJson.exports?.['.']?.import, './index.js');
   assertEquals(packageJson.exports?.['./result']?.import, './result.js');
+  assertEquals(packageJson.exports?.['./crypto']?.import, './crypto.js');
+  assertEquals(packageJson.exports?.['./crypto']?.types, './crypto.d.ts');
   assert(files.has('/virtual/node_modules/@soundscript/soundscript/index.js'));
   assert(files.has('/virtual/node_modules/@soundscript/soundscript/result.js'));
+  assert(files.has('/virtual/node_modules/@soundscript/soundscript/crypto.js'));
+  assert(files.has('/virtual/node_modules/@soundscript/soundscript/crypto.d.ts'));
 });
 
 Deno.test('installed stdlib package emits parser-stable soundscript sources for typeclasses', () => {
@@ -128,6 +132,7 @@ Deno.test('installed stdlib package resolves stable runtime subpaths from plain 
     'consumer.mjs',
     [
       "import { defaulted, nullable, optional, readonlyRecord, string } from '@soundscript/soundscript/decode';",
+      "import { Crypto } from '@soundscript/soundscript/crypto';",
       "import { emptyJsonRecord, isJsonObject, mergeJsonRecords } from '@soundscript/soundscript/json';",
       "import { collect, err, mapErr, ok, some, tapErr, unwrapOr, unwrapOrElse, unwrapOrThrow } from '@soundscript/soundscript/result';",
       '',
@@ -139,6 +144,11 @@ Deno.test('installed stdlib package resolves stable runtime subpaths from plain 
       "const decodedRecord = readonlyRecord(nullable(string)).decode({ first: 'ok', second: null });",
       "if (decodedRecord.tag !== 'ok') {",
       '  throw decodedRecord.error;',
+      '}',
+      '',
+      "const digest = await Crypto.digest('SHA-256', new TextEncoder().encode('soundscript'));",
+      "if (digest.tag !== 'ok' || digest.value.byteLength !== 32) {",
+      "  throw new Error('expected SHA-256 digest bytes.');",
       '}',
       '',
       'const merged = mergeJsonRecords(emptyJsonRecord(), { tags: decodedRecord.value });',
@@ -208,12 +218,15 @@ Deno.test('installed stdlib package declarations resolve from plain TypeScript N
     'consumer.mts',
     [
       "import { defaulted, nullable, optional, readonlyRecord, string } from '@soundscript/soundscript/decode';",
+      "import { Crypto, type DigestAlgorithm } from '@soundscript/soundscript/crypto';",
       "import { copyJsonRecord, emptyJsonRecord, isJsonObject, mergeJsonRecords, type JsonValue } from '@soundscript/soundscript/json';",
       "import { collect, err, mapErr, ok, some, tapErr, unwrapOr, unwrapOrElse, unwrapOrThrow, type Result } from '@soundscript/soundscript/result';",
       '',
       "const decodedName = defaulted(optional(string), 'anon').decode(undefined);",
       "const decodedRecord = readonlyRecord(nullable(string)).decode({ first: 'ok', second: null });",
       'const sourceJson: Readonly<Record<string, JsonValue>> = { feature: true };',
+      "const digestAlgorithm: DigestAlgorithm = 'SHA-256';",
+      'const digest = Crypto.digest(digestAlgorithm, new Uint8Array());',
       'const copiedJson = copyJsonRecord(sourceJson);',
       'const mergedJson = mergeJsonRecords(emptyJsonRecord(), copiedJson);',
       'const collected = collect([ok(1), ok(2)] as const);',
@@ -234,6 +247,7 @@ Deno.test('installed stdlib package declarations resolve from plain TypeScript N
       '',
       'void decodedName;',
       'void decodedRecord;',
+      'void digest;',
       'void collected;',
       'void mapped;',
       'void tapped;',

@@ -256,9 +256,9 @@ and documents explicitly.
 The stable package story for v1 is:
 
 - compiler-owned source-time builtin modules such as `sts:prelude`, `sts:failures`, `sts:json`,
-  `sts:result`, `sts:match`, `sts:url`, `sts:fetch`, `sts:text`, `sts:random`, `sts:compare`,
-  `sts:hash`, `sts:decode`, `sts:encode`, `sts:codec`, `sts:derive`, `sts:concurrency`,
-  `sts:concurrency/task`, `sts:hkt`, `sts:typeclasses`, and `sts:macros`
+  `sts:result`, `sts:match`, `sts:url`, `sts:fetch`, `sts:text`, `sts:random`, `sts:crypto`,
+  `sts:compare`, `sts:hash`, `sts:decode`, `sts:encode`, `sts:codec`, `sts:derive`,
+  `sts:concurrency`, `sts:concurrency/task`, `sts:hkt`, `sts:typeclasses`, and `sts:macros`
 - `@soundscript/soundscript` as the canonical npm package for the CLI, language server, and emitted
   runtime / TypeScript interop surface under `@soundscript/soundscript/*`
 - `package.json#soundscript.exports` for shipped `.sts` package-source discovery

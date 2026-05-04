@@ -141,6 +141,12 @@ function rewriteRuntimeModuleSpecifiers(
       if (ts.isStringLiteralLike(firstArgument)) {
         addReplacement(firstArgument);
       }
+    } else if (
+      ts.isImportTypeNode(node) &&
+      ts.isLiteralTypeNode(node.argument) &&
+      ts.isStringLiteralLike(node.argument.literal)
+    ) {
+      addReplacement(node.argument.literal);
     }
 
     ts.forEachChild(node, visit);

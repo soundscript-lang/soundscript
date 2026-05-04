@@ -32,6 +32,9 @@ import {
   CONSOLE_STDLIB_DECLARATION_FILE,
   CONSOLE_STDLIB_DECLARATION_TEXT,
   CONSOLE_STDLIB_MODULE_SPECIFIER,
+  CRYPTO_STDLIB_DECLARATION_FILE,
+  CRYPTO_STDLIB_DECLARATION_TEXT,
+  CRYPTO_STDLIB_MODULE_SPECIFIER,
   DEBUG_STDLIB_DECLARATION_TEXT,
   DECODE_STDLIB_DECLARATION_FILE,
   DECODE_STDLIB_MODULE_SPECIFIER,
@@ -114,6 +117,7 @@ Deno.test('std package support resolves root and stdlib leaf specifiers to virtu
     capabilitiesResolved,
     timeResolved,
     consoleResolved,
+    cryptoResolved,
     pathResolved,
     bytesResolved,
     fsResolved,
@@ -148,6 +152,7 @@ Deno.test('std package support resolves root and stdlib leaf specifiers to virtu
         CAPABILITIES_STDLIB_MODULE_SPECIFIER,
         TIME_STDLIB_MODULE_SPECIFIER,
         CONSOLE_STDLIB_MODULE_SPECIFIER,
+        CRYPTO_STDLIB_MODULE_SPECIFIER,
         PATH_STDLIB_MODULE_SPECIFIER,
         BYTES_STDLIB_MODULE_SPECIFIER,
         FS_STDLIB_MODULE_SPECIFIER,
@@ -198,6 +203,7 @@ Deno.test('std package support resolves root and stdlib leaf specifiers to virtu
   assertEquals(capabilitiesResolved?.resolvedFileName, CAPABILITIES_STDLIB_DECLARATION_FILE);
   assertEquals(timeResolved?.resolvedFileName, TIME_STDLIB_DECLARATION_FILE);
   assertEquals(consoleResolved?.resolvedFileName, CONSOLE_STDLIB_DECLARATION_FILE);
+  assertEquals(cryptoResolved?.resolvedFileName, CRYPTO_STDLIB_DECLARATION_FILE);
   assertEquals(pathResolved?.resolvedFileName, PATH_STDLIB_DECLARATION_FILE);
   assertEquals(bytesResolved?.resolvedFileName, BYTES_STDLIB_DECLARATION_FILE);
   assertEquals(fsResolved?.resolvedFileName, FS_STDLIB_DECLARATION_FILE);
@@ -237,6 +243,11 @@ Deno.test('std package support projects generated Task object declarations', () 
   assertStringIncludes(CAPABILITIES_STDLIB_DECLARATION_TEXT, 'export declare function list()');
   assertStringIncludes(TIME_STDLIB_DECLARATION_TEXT, 'export declare class Duration');
   assertStringIncludes(CONSOLE_STDLIB_DECLARATION_TEXT, 'export declare const console');
+  assertStringIncludes(CRYPTO_STDLIB_DECLARATION_TEXT, 'export declare function digest');
+  assertStringIncludes(CRYPTO_STDLIB_DECLARATION_TEXT, 'export declare function hmac');
+  assertStringIncludes(CRYPTO_STDLIB_DECLARATION_TEXT, 'randomBytes as randomBytes');
+  assertStringIncludes(CRYPTO_STDLIB_DECLARATION_TEXT, 'export declare function timingSafeEqual');
+  assertStringIncludes(CRYPTO_STDLIB_DECLARATION_TEXT, 'export declare const Crypto');
   assertStringIncludes(PATH_STDLIB_DECLARATION_TEXT, 'export declare function join');
   assertStringIncludes(BYTES_STDLIB_DECLARATION_TEXT, 'export declare const Bytes');
   assertStringIncludes(FS_STDLIB_DECLARATION_TEXT, 'export declare function readTextFile');

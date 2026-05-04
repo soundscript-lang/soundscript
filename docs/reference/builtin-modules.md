@@ -68,8 +68,8 @@ The stable `sts:*` surface stays focused and composable.
   `codec`, and `tagged`.
 - `sts:hkt` owns low-level higher-kinded type machinery.
 - `sts:typeclasses` owns `Functor`, `Applicative`, `Monad`, `AsyncMonad`, and `Do`.
-- `sts:url`, `sts:fetch`, `sts:streams`, `sts:text`, and `sts:random` are the initial portable leaf
-  modules.
+- `sts:url`, `sts:fetch`, `sts:streams`, `sts:text`, `sts:random`, and `sts:crypto` are the initial
+  portable leaf modules.
 
 If you are deciding where a helper should live, prefer the narrowest leaf module that honestly
 matches the ownership boundary.
@@ -78,24 +78,24 @@ matches the ownership boundary.
 
 The portable stdlib is being implemented JS-first. The current checked behavior is:
 
-| Surface                                                                                      | js-browser               | js-node                  |
-| -------------------------------------------------------------------------------------------- | ------------------------ | ------------------------ |
-| pure language modules (`sts:result`, `sts:json`, `sts:decode`, `sts:encode`, etc.)           | yes                      | yes                      |
-| portable Web-style modules (`sts:url`, `sts:fetch`, `sts:streams`, `sts:text`, `sts:random`) | yes                      | yes                      |
-| JS-neutral support (`sts:capabilities`, `sts:time`, `sts:console`, `sts:path`, `sts:bytes`)  | yes                      | yes                      |
-| task helpers (`sts:concurrency/task`)                                                        | yes                      | yes                      |
-| structured concurrency runtime (`sts:concurrency/runtime`, `TaskGroup`, `AsyncContext`)      | no                       | yes                      |
-| parallel/sync/atomics provider modules                                                       | gated                    | gated                    |
-| filesystem (`sts:fs`)                                                                        | no                       | yes                      |
-| environment (`sts:env`)                                                                      | no                       | yes                      |
-| CLI (`sts:cli`)                                                                              | no                       | yes                      |
-| process information and child processes (`sts:process`)                                      | no                       | yes                      |
-| HTTP client                                                                                  | use `sts:fetch`          | use `sts:fetch`          |
-| HTTP server (`sts:http`)                                                                     | no                       | yes                      |
-| raw DNS/TCP/TLS networking (`sts:net`)                                                       | no                       | yes                      |
-| raw Web host imports (`web:*`)                                                               | `// #[interop]` required | no                       |
-| raw Node host imports (`node:*`)                                                             | no                       | `// #[interop]` required |
-| app/embedder ambient values (`extern:*`)                                                     | `// #[interop]` required | `// #[interop]` required |
+| Surface                                                                                                    | js-browser               | js-node                  |
+| ---------------------------------------------------------------------------------------------------------- | ------------------------ | ------------------------ |
+| pure language modules (`sts:result`, `sts:json`, `sts:decode`, `sts:encode`, etc.)                         | yes                      | yes                      |
+| portable Web-style modules (`sts:url`, `sts:fetch`, `sts:streams`, `sts:text`, `sts:random`, `sts:crypto`) | yes                      | yes                      |
+| JS-neutral support (`sts:capabilities`, `sts:time`, `sts:console`, `sts:path`, `sts:bytes`)                | yes                      | yes                      |
+| task helpers (`sts:concurrency/task`)                                                                      | yes                      | yes                      |
+| structured concurrency runtime (`sts:concurrency/runtime`, `TaskGroup`, `AsyncContext`)                    | no                       | yes                      |
+| parallel/sync/atomics provider modules                                                                     | gated                    | gated                    |
+| filesystem (`sts:fs`)                                                                                      | no                       | yes                      |
+| environment (`sts:env`)                                                                                    | no                       | yes                      |
+| CLI (`sts:cli`)                                                                                            | no                       | yes                      |
+| process information and child processes (`sts:process`)                                                    | no                       | yes                      |
+| HTTP client                                                                                                | use `sts:fetch`          | use `sts:fetch`          |
+| HTTP server (`sts:http`)                                                                                   | no                       | yes                      |
+| raw DNS/TCP/TLS networking (`sts:net`)                                                                     | no                       | yes                      |
+| raw Web host imports (`web:*`)                                                                             | `// #[interop]` required | no                       |
+| raw Node host imports (`node:*`)                                                                           | no                       | `// #[interop]` required |
+| app/embedder ambient values (`extern:*`)                                                                   | `// #[interop]` required | `// #[interop]` required |
 
 `js-browser` diagnostics intentionally reject js-node provider modules rather than exposing stubs
 that fail later at runtime. Browser networking should use `fetch`, WebSocket, WebTransport, and

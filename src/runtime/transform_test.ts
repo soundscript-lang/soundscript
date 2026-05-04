@@ -95,6 +95,30 @@ Deno.test('detectRuntimeTypeScriptSupport treats Deno as direct-TypeScript capab
   assertEquals(detectRuntimeTypeScriptSupport({ Deno: {} }), 'strip');
 });
 
+Deno.test('rewriteModuleSpecifiersForEmit rewrites import type module references', () => {
+  const rewritten = rewriteModuleSpecifiersForEmit(
+    [
+      "import type { Result } from 'sts:result';",
+      'export type SyncResult<T> = import("sts:result").Result<T, never>;',
+      "export type Decoder<T> = import('sts:decode').Decoder<T>;",
+      'export type Plain<T> = Result<T, never>;',
+      '',
+    ].join('\n'),
+    '/virtual/node_modules/@soundscript/soundscript/time.d.ts',
+  );
+
+  assertEquals(
+    rewritten,
+    [
+      "import type { Result } from '@soundscript/soundscript/result';",
+      'export type SyncResult<T> = import("@soundscript/soundscript/result").Result<T, never>;',
+      "export type Decoder<T> = import('@soundscript/soundscript/decode').Decoder<T>;",
+      'export type Plain<T> = Result<T, never>;',
+      '',
+    ].join('\n'),
+  );
+});
+
 Deno.test('rewriteModuleSpecifiersForEmit lowers extern:globalThis imports to globalThis reads', () => {
   const rewritten = rewriteModuleSpecifiersForEmit(
     [

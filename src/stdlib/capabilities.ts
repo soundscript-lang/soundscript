@@ -36,6 +36,7 @@ function isNodeRuntime(): boolean {
 function defaultManifest(): readonly CapabilityInfo[] {
   const hasFetch = typeof globalThis.fetch === 'function';
   const hasCrypto = globalThis.crypto !== undefined;
+  const hasSubtleCrypto = globalThis.crypto?.subtle !== undefined;
   const hasTextCodec = typeof globalThis.TextEncoder === 'function' &&
     typeof globalThis.TextDecoder === 'function';
   const node = isNodeRuntime();
@@ -68,6 +69,11 @@ function defaultManifest(): readonly CapabilityInfo[] {
       status: hasCrypto ? 'available' : 'unavailable',
       reason: hasCrypto ? undefined : 'global crypto is not available',
     },
+    {
+      name: 'platform.crypto.subtle',
+      status: hasSubtleCrypto ? 'available' : 'unavailable',
+      reason: hasSubtleCrypto ? undefined : 'global crypto.subtle is not available',
+    },
     { name: 'console', status: 'available' },
     { name: 'time', status: 'available' },
     { name: 'path', status: 'available' },
@@ -98,6 +104,16 @@ function defaultManifest(): readonly CapabilityInfo[] {
       name: 'random',
       status: hasCrypto ? 'available' : 'unavailable',
       reason: hasCrypto ? undefined : 'global crypto is not available',
+    },
+    {
+      name: 'crypto.digest',
+      status: hasSubtleCrypto ? 'available' : 'unavailable',
+      reason: hasSubtleCrypto ? undefined : 'global crypto.subtle is not available',
+    },
+    {
+      name: 'crypto.hmac',
+      status: hasSubtleCrypto ? 'available' : 'unavailable',
+      reason: hasSubtleCrypto ? undefined : 'global crypto.subtle is not available',
     },
     {
       name: 'fs',
