@@ -644,6 +644,42 @@ Async iteration helpers should wait for the async-iteration runtime slice before
 
 The bytes module is the common low-level data API for IO, crypto, networking, workers, and Wasm.
 
+The initial JS implementation keeps `Bytes` as a `Uint8Array` alias and exposes allocation-free
+views, explicit copy helpers, lexicographic compare, shared-buffer detection, and `ArrayBuffer`
+conversion for host boundaries:
+
+```ts
+export type Bytes = Uint8Array;
+export type BytesCompareResult = -1 | 0 | 1;
+
+export interface BytesViewOptions {
+  readonly byteOffset?: number;
+  readonly byteLength?: number;
+}
+
+export interface BytesArrayBufferOptions {
+  readonly copy?: boolean;
+}
+
+export function empty(): Bytes;
+export function from(values: ArrayLike<number> | ArrayBufferLike): Bytes;
+export function isBytes(value: unknown): value is Bytes;
+export function view(buffer: ArrayBufferLike, options?: BytesViewOptions): Bytes;
+export function fromString(text: string, options?: BytesFromOptions): Bytes;
+export function toString(bytes: Bytes, options?: BytesFromOptions): string;
+export function concat(chunks: readonly Bytes[]): Bytes;
+export function equals(left: Bytes, right: Bytes): boolean;
+export function compare(left: Bytes, right: Bytes): BytesCompareResult;
+export function slice(bytes: Bytes, start?: number, end?: number): Bytes;
+export function copy(bytes: Bytes): Bytes;
+export function copyTo(source: Bytes, target: Bytes, targetOffset?: number): void;
+export function isShared(bytes: Bytes): boolean;
+export function toArrayBuffer(bytes: Bytes, options?: BytesArrayBufferOptions): ArrayBuffer;
+```
+
+The deeper value-typed design below remains the direction once the checker/runtime has first-class
+support for immutable byte values, transferability, and shared-buffer capabilities:
+
 ```ts
 export interface ByteView {
   readonly byteLength: number;

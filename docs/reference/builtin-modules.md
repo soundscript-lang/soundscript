@@ -59,7 +59,8 @@ The stable `sts:*` surface stays focused and composable.
 - `sts:concurrency/runtime` owns js-node structured concurrency primitives such as `TaskGroup` and
   `AsyncContext`; other targets gate that module until they have a provider.
 - `sts:capabilities`, `sts:time`, `sts:console`, `sts:streams`, `sts:path`, and `sts:bytes` are
-  JS-neutral portable support modules.
+  JS-neutral portable support modules. `sts:bytes` is the shared low-level byte surface for
+  zero-copy views, explicit copies, shared-buffer detection, and host-boundary buffer conversion.
 - `sts:fs`, `sts:env`, `sts:cli`, `sts:process`, `sts:http`, and `sts:net` are initial js-node
   provider modules and are capability-gated away from browser/Wasm targets. `sts:net/dns`,
   `sts:net/tcp`, and `sts:net/tls` provide narrower raw networking entry points, while

@@ -22,6 +22,45 @@ Deno.test('bytes helpers encode concatenate and compare byte arrays', () => {
   assertEquals(Bytes.equals(joined, Bytes.fromString('soundscript')), true);
 });
 
+Deno.test('bytes helpers expose low-level view and copy primitives', () => {
+  const buffer = new ArrayBuffer(6);
+  const raw = new Uint8Array(buffer);
+  raw.set([0, 1, 2, 3, 4, 5]);
+
+  const view = Bytes.view(buffer, { byteOffset: 2, byteLength: 3 });
+  const target = Bytes.from([9, 9, 9, 9, 9]);
+
+  Bytes.copyTo(view, target, 1);
+
+  assertEquals(Array.from(view), [2, 3, 4]);
+  assertEquals(Array.from(target), [9, 2, 3, 4, 9]);
+  assertEquals(Bytes.isBytes(view), true);
+  assertEquals(Bytes.compare(Bytes.from([1, 2]), Bytes.from([1, 2, 0])), -1);
+  assertEquals(Bytes.compare(Bytes.from([1, 3]), Bytes.from([1, 2, 9])), 1);
+  assertEquals(Bytes.compare(Bytes.from([1, 2]), Bytes.from([1, 2])), 0);
+});
+
+Deno.test('bytes helpers expose exact buffers without copying when allowed', () => {
+  const bytes = Bytes.from([1, 2, 3]);
+  const borrowed = Bytes.toArrayBuffer(bytes);
+  const copied = Bytes.toArrayBuffer(bytes, { copy: true });
+  new Uint8Array(borrowed)[0] = 9;
+
+  assertEquals(borrowed, bytes.buffer);
+  assertEquals(Array.from(bytes), [9, 2, 3]);
+  assertEquals(Array.from(new Uint8Array(copied)), [1, 2, 3]);
+});
+
+Deno.test('bytes helpers safely detect shared backing stores', () => {
+  assertEquals(Bytes.isShared(Bytes.from([1, 2, 3])), false);
+
+  if (typeof SharedArrayBuffer === 'function') {
+    const shared = Bytes.view(new SharedArrayBuffer(2));
+    assertEquals(Bytes.isShared(shared), true);
+    assertEquals(Bytes.toArrayBuffer(shared) instanceof ArrayBuffer, true);
+  }
+});
+
 Deno.test('path helpers normalize portable posix paths', () => {
   assertEquals(join('/tmp', 'sound', '..', 'script.ts'), '/tmp/script.ts');
   assertEquals(normalize('a//b/../c'), 'a/c');

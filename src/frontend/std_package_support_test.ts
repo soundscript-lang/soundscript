@@ -294,6 +294,9 @@ Deno.test('std package support projects generated Task object declarations', () 
   assertStringIncludes(CRYPTO_HMAC_STDLIB_DECLARATION_TEXT, 'export declare const Hmac');
   assertStringIncludes(PATH_STDLIB_DECLARATION_TEXT, 'export declare function join');
   assertStringIncludes(BYTES_STDLIB_DECLARATION_TEXT, 'export declare const Bytes');
+  assertStringIncludes(BYTES_STDLIB_DECLARATION_TEXT, 'export declare function view');
+  assertStringIncludes(BYTES_STDLIB_DECLARATION_TEXT, 'export declare function copyTo');
+  assertStringIncludes(BYTES_STDLIB_DECLARATION_TEXT, 'export declare function toArrayBuffer');
   assertStringIncludes(FS_STDLIB_DECLARATION_TEXT, 'export declare function readTextFile');
   assertStringIncludes(FS_STDLIB_DECLARATION_TEXT, 'export declare function writeTextFile');
   assertStringIncludes(FS_STDLIB_DECLARATION_TEXT, 'export declare function stat');
