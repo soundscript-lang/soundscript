@@ -312,8 +312,10 @@ Deno.test('std package support projects generated Task object declarations', () 
   assertEquals(FS_STDLIB_DECLARATION_TEXT.includes('makeDirectory'), false);
   assertEquals(FS_STDLIB_DECLARATION_TEXT.includes('readBytes'), false);
   assertStringIncludes(ENV_STDLIB_DECLARATION_TEXT, 'export declare function get');
-  assertStringIncludes(ENV_STDLIB_DECLARATION_TEXT, 'export declare const required');
+  assertStringIncludes(ENV_STDLIB_DECLARATION_TEXT, 'export declare function required');
   assertStringIncludes(ENV_STDLIB_DECLARATION_TEXT, 'export declare function toRecord');
+  assertEquals(ENV_STDLIB_DECLARATION_TEXT.includes('export declare function require('), false);
+  assertEquals(ENV_STDLIB_DECLARATION_TEXT.includes('export declare const entries'), false);
   assertStringIncludes(CLI_STDLIB_DECLARATION_TEXT, 'export declare function args');
   assertStringIncludes(CLI_STDLIB_DECLARATION_TEXT, 'export declare function stdio');
   assertStringIncludes(CLI_STDLIB_DECLARATION_TEXT, 'export declare function terminalSize');

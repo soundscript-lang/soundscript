@@ -20,7 +20,7 @@ export function get(name: string): Result<Option<string>, Failure> {
   }
 }
 
-export function require(name: string): Result<string, Failure> {
+export function required(name: string): Result<string, Failure> {
   const value = get(name);
   if (value.tag === 'err') {
     return value;
@@ -30,8 +30,6 @@ export function require(name: string): Result<string, Failure> {
   }
   return ok(value.value.value);
 }
-
-export const required = require;
 
 export function has(name: string): Result<boolean, Failure> {
   const value = get(name);
@@ -71,15 +69,11 @@ export function toRecord(): Result<Readonly<Record<string, string>>, Failure> {
   }
 }
 
-export const entries = toRecord;
-
 export const Env = Object.freeze({
   get,
-  require,
   required,
   has,
   set,
   remove,
   toRecord,
-  entries,
 });

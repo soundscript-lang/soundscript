@@ -85,6 +85,8 @@ Deno.test('node provider env and process expose host state through Result', () =
   assertEquals(required.tag === 'ok' ? required.value : undefined, 'ok');
   assertEquals(hasVariable.tag === 'ok' ? hasVariable.value : undefined, true);
   assertEquals(Env.toRecord().tag, 'ok');
+  assertEquals('require' in Env, false);
+  assertEquals('entries' in Env, false);
   assertEquals(Env.remove(variable).tag, 'ok');
   assertEquals(Process.cwd().tag, 'ok');
   assertEquals(Process.info().tag, 'ok');
