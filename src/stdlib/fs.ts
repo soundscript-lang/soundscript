@@ -14,7 +14,7 @@ import {
 
 import { Failure, normalizeThrown } from 'sts:failures';
 import { err, ok } from 'sts:result';
-import type { Bytes } from 'sts:bytes';
+import { type Bytes, Bytes as BytesApi } from 'sts:bytes';
 import type { ByteView } from 'sts:streams';
 import { WallDateTime } from 'sts:time';
 import type { AsyncResult } from 'sts:concurrency/task';
@@ -46,12 +46,6 @@ export interface FileInfo {
   readonly accessedAt?: WallDateTime;
   readonly createdAt?: WallDateTime;
   readonly readonly?: boolean;
-}
-
-export interface LegacyFileInfo {
-  readonly isDirectory: boolean;
-  readonly isFile: boolean;
-  readonly size: number;
 }
 
 export interface DirectoryEntry {
@@ -136,14 +130,21 @@ function directoryEntryFromDirent(dirent: DirentLike): DirectoryEntry {
   };
 }
 
+function isSharedArrayBuffer(value: unknown): value is SharedArrayBuffer {
+  return typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer;
+}
+
 function bytesFromView(bytes: ByteView): Uint8Array {
-  if (bytes instanceof ArrayBuffer || bytes instanceof SharedArrayBuffer) {
-    return new Uint8Array(bytes);
+  if (bytes instanceof ArrayBuffer || isSharedArrayBuffer(bytes)) {
+    return BytesApi.view(bytes);
   }
   if (bytes instanceof Uint8Array) {
     return bytes;
   }
-  return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return BytesApi.view(bytes.buffer, {
+    byteOffset: bytes.byteOffset,
+    byteLength: bytes.byteLength,
+  });
 }
 
 async function pathExistsForWrite(path: PathLike): Promise<boolean> {
@@ -377,28 +378,6 @@ export async function realPath(
   }
 }
 
-export async function info(path: PathLike): AsyncResult<LegacyFileInfo, Failure> {
-  try {
-    const fileStat = await nodeStat(path);
-    return ok({
-      isDirectory: fileStat.isDirectory(),
-      isFile: fileStat.isFile(),
-      size: fileStat.size,
-    });
-  } catch (error) {
-    return err(failureFromUnknown(error));
-  }
-}
-
-export const readBytes = readFile;
-export const readText = readTextFile;
-export const writeBytes = writeFile;
-export const writeText = writeTextFile;
-
-export async function makeDirectory(path: PathLike): AsyncResult<void, Failure> {
-  return await mkdir(path, { recursive: true });
-}
-
 export const Fs = Object.freeze({
   exists,
   readFile,
@@ -413,10 +392,4 @@ export const Fs = Object.freeze({
   rename,
   copyFile,
   realPath,
-  info,
-  readText,
-  readBytes,
-  writeText,
-  writeBytes,
-  makeDirectory,
 });

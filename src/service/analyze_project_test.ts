@@ -2882,11 +2882,11 @@ Deno.test('analyzeProject gates js-node provider modules on js-browser', async (
   const tempDirectory = await createTempProject({
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
-      "import { readText } from 'sts:fs';",
+      "import { readTextFile } from 'sts:fs';",
       "import { output } from 'sts:process/command';",
       "import { connect } from 'sts:net/tcp';",
       '',
-      'void readText;',
+      'void readTextFile;',
       'void output;',
       'void connect;',
       '',
