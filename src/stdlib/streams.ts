@@ -94,14 +94,21 @@ function cancellationFailure(signal: AbortSignal): CancellationFailure {
     : new CancellationFailure('Operation was cancelled.', signal.reason);
 }
 
+function isSharedArrayBuffer(value: unknown): value is SharedArrayBuffer {
+  return typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer;
+}
+
 function bytesFromView(view: ByteView): Bytes {
-  if (view instanceof ArrayBuffer || view instanceof SharedArrayBuffer) {
-    return new Uint8Array(view);
+  if (view instanceof ArrayBuffer || isSharedArrayBuffer(view)) {
+    return BytesApi.view(view);
   }
   if (view instanceof Uint8Array) {
     return view;
   }
-  return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+  return BytesApi.view(view.buffer, {
+    byteOffset: view.byteOffset,
+    byteLength: view.byteLength,
+  });
 }
 
 function abortResult<T>(

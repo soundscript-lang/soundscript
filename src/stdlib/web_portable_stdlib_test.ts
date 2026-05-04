@@ -1,7 +1,7 @@
 import { assertEquals } from '@std/assert';
 
 import { decodeUtf8, encodeUtf8 } from './text.ts';
-import { readAllBytes, readAllText, writeAllBytes } from './streams.ts';
+import { fromBytes, readAllBytes, readAllText, writeAllBytes } from './streams.ts';
 import { Bytes } from './bytes.ts';
 import { readBytes, readJson, readText, request } from './fetch.ts';
 import { hasCapability } from './capabilities.ts';
@@ -40,6 +40,21 @@ Deno.test('streams helpers read and write Web byte streams', async () => {
 
   assertEquals((await writeAllBytes(writable, Bytes.fromString('io'))).tag, 'ok');
   assertEquals(Bytes.toString(Bytes.concat(written)), 'io');
+});
+
+Deno.test('streams helpers normalize low-level byte views', async () => {
+  const buffer = new ArrayBuffer(6);
+  Bytes.copyTo(Bytes.fromString('prefix'), Bytes.view(buffer));
+  const bytes = await readAllBytes(fromBytes(new DataView(buffer, 3, 3)));
+
+  assertEquals(bytes.tag === 'ok' ? Bytes.toString(bytes.value) : undefined, 'fix');
+
+  if (typeof SharedArrayBuffer === 'function') {
+    const shared = Bytes.view(new SharedArrayBuffer(2));
+    Bytes.copyTo(Bytes.fromString('sh'), shared);
+    const sharedBytes = await readAllBytes(fromBytes(shared.buffer));
+    assertEquals(sharedBytes.tag === 'ok' ? Bytes.toString(sharedBytes.value) : undefined, 'sh');
+  }
 });
 
 Deno.test('fetch helpers normalize Web Response reads to AsyncResult values', async () => {
