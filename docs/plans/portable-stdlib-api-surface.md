@@ -368,88 +368,21 @@ stabilizes. Promise fanout is `Task.all(...)`; true parallelism is `ThreadPool`.
 ## `sts:concurrency`
 
 The detailed API lives in `docs/plans/structured-concurrency-and-parallelism.md`. This module is
-included here so the full stdlib catalog has one entry point. It should re-export the normal
-teaching surface from the submodules.
+included here so the full stdlib catalog has one portable entry point. The root stays pay-for-play:
+it re-exports task and cancellation primitives only, and does not import provider-backed runtime,
+parallel, sync, or atomics modules.
 
 ```ts
-export { Task } from 'sts:concurrency/task';
-export { Runtime } from 'sts:concurrency/runtime';
-
 export type AsyncResult<T, E = Failure> = Promise<Result<T, E>>;
-
-export class TaskGroup<E = Failure> implements AsyncDisposable {
-  readonly signal: AbortSignal;
-  static open<E = Failure>(policy?: TaskGroupPolicy): TaskGroup<E>;
-  static currentSignal(): AbortSignal;
-  fork<T>(body: () => AsyncResult<T, E>, options?: { name?: string }): TaskHandle<T, E>;
-  all<T extends Record<string, () => AsyncResult<unknown, E>>>(
-    tasks: T,
-  ): AsyncResult<TaskGroup.AllResult<T>, E>;
-  race<T>(tasks: Iterable<() => AsyncResult<T, E>>): AsyncResult<T, E>;
-  firstOk<T>(tasks: Iterable<() => AsyncResult<T, E>>): AsyncResult<T, E>;
-}
-
-export class TaskHandle<T, E = Failure> {
-  join(): AsyncResult<T, E>;
-  cancel(reason?: Failure): void;
-}
-
-export interface ThreadPoolOptions {
-  readonly workers: number | 'available';
-  readonly name?: string;
-  readonly queueLimit?: number;
-}
-
-export class ThreadPool implements AsyncDisposable {
-  static get default(): ThreadPool;
-  static fixed(options: ThreadPoolOptions): ThreadPool;
-  run<I, O, E = Failure>(
-    entrypoint: ThreadEntry<Send<I>, Send<O>, E>,
-    input: Send<I>,
-    options?: { name?: string },
-  ): AsyncResult<Send<O>, E>;
-  map<I, O, E = Failure>(
-    entrypoint: ThreadEntry<Send<I>, Send<O>, E>,
-    inputs: readonly Send<I>[],
-    options?: { name?: string },
-  ): AsyncResult<Send<O>[], E>;
-}
-
-export class Thread<I, O, E = Failure> {
-  static spawn<I, O, E = Failure>(
-    entrypoint: ThreadEntry<Send<I>, Send<O>, E>,
-    input: Send<I>,
-    options?: ThreadOptions,
-  ): Thread<Send<I>, Send<O>, E>;
-  join(): AsyncResult<Send<O>, E>;
-  cancel(reason?: Failure): void;
-  static blockOn<T, E = Failure>(work: () => AsyncResult<T, E>): Result<T, E>;
-}
-
-export class AsyncContextVariable<T> {
-  constructor(options?: { name?: string; defaultValue?: T });
-  get(): T | undefined;
-  run<R>(value: T, body: () => R): R;
-}
-
-export class AsyncContextSnapshot {
-  constructor();
-  run<R>(body: () => R): R;
-  static wrap<F extends (...args: unknown[]) => unknown>(fn: F): F;
-}
-
-export const AsyncContext: {
-  readonly Variable: typeof AsyncContextVariable;
-  readonly Snapshot: typeof AsyncContextSnapshot;
-};
-
-export type Send<T> = T;
-export type Share<T> = T;
+export { Task } from 'sts:concurrency/task';
+export type { Task, TaskAllResult } from 'sts:concurrency/task';
+export { CancellationFailure, DeadlineFailure, TimeoutFailure } from 'sts:concurrency/task';
 ```
 
-`TaskGroup` stays on the root module because it is the structured-concurrency primitive users should
-reach for first. `ThreadPool`, `Thread`, `Send`, and `Share` are re-exported from the root for
-discoverability, but runtime support is capability-gated.
+Provider-backed APIs are imported from the descriptive submodules directly: `TaskGroup`,
+`TaskHandle`, `AsyncContext`, and `Runtime` from `sts:concurrency/runtime`; `ThreadPool`, `Thread`,
+`Send`, and `Share` from `sts:concurrency/parallel`; synchronization from `sts:concurrency/sync`;
+and atomic shared-memory helpers from `sts:concurrency/atomics`.
 
 ## `sts:concurrency/parallel`
 

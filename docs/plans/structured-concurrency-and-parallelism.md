@@ -72,19 +72,14 @@ Reference material:
 Prefer one primary module:
 
 ```ts
-import {
-  AsyncContext,
-  type AsyncResult,
-  type Send,
-  type Share,
-  TaskGroup,
-  Thread,
-  ThreadPool,
-} from 'sts:concurrency';
+import { type AsyncResult } from 'sts:concurrency';
+import { AsyncContext, TaskGroup } from 'sts:concurrency/runtime';
+import { type Send, type Share, Thread, ThreadPool } from 'sts:concurrency/parallel';
 ```
 
-`sts:concurrency` is the normal teaching surface. It should re-export from descriptive submodules
-instead of creating unrelated top-level modules:
+`sts:concurrency` is the portable teaching surface for `AsyncResult`, `Task`, and cancellation
+failures. Provider-backed APIs stay pay-for-play in descriptive submodules instead of being pulled
+through the root:
 
 - `sts:concurrency/task`
 - `sts:concurrency/parallel`
@@ -669,7 +664,9 @@ This example shows nested helpers, structured fanout, normal async IO, and an ex
 boundary.
 
 ```ts
-import { type AsyncResult, TaskGroup, ThreadPool } from 'sts:concurrency';
+import { type AsyncResult } from 'sts:concurrency';
+import { ThreadPool } from 'sts:concurrency/parallel';
+import { TaskGroup } from 'sts:concurrency/runtime';
 import http from 'sts:http';
 import db from 'sts:db';
 
@@ -816,7 +813,8 @@ A Go-like library can be layered on top without making unstructured tasks the co
 Sketch:
 
 ```ts
-import { type AsyncResult, TaskGroup } from 'sts:concurrency';
+import { type AsyncResult } from 'sts:concurrency';
+import { TaskGroup } from 'sts:concurrency/runtime';
 
 class Supervisor implements AsyncDisposable {
   #group = TaskGroup.open<Failure>({
@@ -1015,7 +1013,7 @@ Example:
 
 ```ts
 import { Do } from 'sts:prelude';
-import { asyncResultMonad } from 'sts:concurrency';
+import { asyncResultMonad } from 'sts:typeclasses';
 
 async function loadProfile(id: UserId): AsyncResult<Profile, Failure> {
   return await Do(asyncResultMonad<Failure>(), async (bind) => {

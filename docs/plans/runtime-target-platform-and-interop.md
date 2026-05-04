@@ -83,8 +83,7 @@ The stdlib/platform split is:
   - `AbortSignal` / `AbortController`
   - `console` and `sts:console`
 - portable runtime and concurrency modules:
-  - `sts:concurrency` for `AsyncResult`, `TaskGroup`, `ThreadPool`, `Thread`, `AsyncContext`,
-    `Send`, and `Share`
+  - `sts:concurrency` for portable `AsyncResult`, `Task`, and cancellation failures
   - `sts:concurrency/task` for cold/lazy `Task<T, E>` recipes and `Task.*` helpers
   - `sts:concurrency/parallel` for `ThreadPool`, `Thread`, `Send`, and `Share`
   - `sts:concurrency/sync` for mutexes, semaphores, and channels
@@ -288,8 +287,8 @@ Implementation order:
 3. async API shape cleanup: `AsyncResult`, unified `AbortSignal`, and `Task` as cold recipe
 4. JS browser and JS node providers for fetch, streams, console, time, env, CLI, filesystem, and
    process where applicable
-5. `sts:concurrency` semantic surface and checker support for `TaskGroup`, `Send`, `Share`, and
-   target-gated `ThreadPool` / `Thread`
+5. `sts:concurrency` semantic surface plus checker support for target-gated `TaskGroup`, `Send`,
+   `Share`, `ThreadPool`, and `Thread` in their focused submodules
 6. Wasm browser and Wasm node provider lowering, including JS-hosted wrappers and worker-backed
    thread capabilities where enabled
 7. target-aware package recheck, effect propagation, provider capability metadata, and

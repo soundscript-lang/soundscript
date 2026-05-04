@@ -10,12 +10,3 @@ export {
   type TaskKind,
   TimeoutFailure,
 } from 'sts:concurrency/task';
-
-export {
-  AsyncContext,
-  Runtime,
-  type RuntimeOptions,
-  TaskGroup,
-  type TaskGroupPolicy,
-  TaskHandle,
-} from 'sts:concurrency/runtime';

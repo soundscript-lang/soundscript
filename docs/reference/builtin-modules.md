@@ -55,6 +55,8 @@ The stable `sts:*` surface stays focused and composable.
   as `codec.isoDate` and `codec.url`.
 - `sts:metadata` owns derive metadata inspection helpers such as `metadataOf(...)` and
   `attachMetadata(...)`.
+- `sts:concurrency` is the portable root for `AsyncResult`, `Task`, and cancellation failures; it
+  does not pull in provider-backed runtime modules.
 - `sts:concurrency/task` owns `Task<T, E>` and result-first async helpers exposed through `Task.*`.
 - `sts:concurrency/runtime` owns js-node structured concurrency primitives such as `TaskGroup` and
   `AsyncContext`; other targets gate that module until they have a provider.

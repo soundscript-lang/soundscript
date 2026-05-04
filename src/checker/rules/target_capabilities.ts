@@ -4,7 +4,6 @@ import {
   isExternModuleSpecifier,
   STS_CLI_MODULE_SPECIFIER,
   STS_CONCURRENCY_ATOMICS_MODULE_SPECIFIER,
-  STS_CONCURRENCY_MODULE_SPECIFIER,
   STS_CONCURRENCY_PARALLEL_MODULE_SPECIFIER,
   STS_CONCURRENCY_RUNTIME_MODULE_SPECIFIER,
   STS_CONCURRENCY_SYNC_MODULE_SPECIFIER,
@@ -115,10 +114,7 @@ function unavailableModuleForTarget(
     return undefined;
   }
 
-  if (
-    specifier === STS_CONCURRENCY_MODULE_SPECIFIER ||
-    specifier === STS_CONCURRENCY_RUNTIME_MODULE_SPECIFIER
-  ) {
+  if (specifier === STS_CONCURRENCY_RUNTIME_MODULE_SPECIFIER) {
     return {
       reason:
         '`TaskGroup` and `AsyncContext` require the js-node async-context runtime provider in this implementation slice.',

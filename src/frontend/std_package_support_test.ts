@@ -289,6 +289,11 @@ Deno.test('std package support projects generated Task object declarations', () 
     'export declare const Task: Readonly<{',
   );
   assertStringIncludes(CONCURRENCY_STDLIB_DECLARATION_TEXT, "from 'sts:concurrency/task';");
+  assertEquals(
+    CONCURRENCY_STDLIB_DECLARATION_TEXT.includes("from 'sts:concurrency/runtime';"),
+    false,
+  );
+  assertEquals(CONCURRENCY_STDLIB_DECLARATION_TEXT.includes('TaskGroup'), false);
   assertStringIncludes(CAPABILITIES_STDLIB_DECLARATION_TEXT, 'export declare function list()');
   assertStringIncludes(TIME_STDLIB_DECLARATION_TEXT, 'export declare class Duration');
   assertStringIncludes(CONSOLE_STDLIB_DECLARATION_TEXT, 'export declare const console');

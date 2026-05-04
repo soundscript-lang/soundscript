@@ -34,7 +34,7 @@ The stable stdlib surface is intentionally small:
 - `sts:codec` owning codec contracts and adapter helpers
 - `sts:derive` owning compiler-provided declaration macros such as `eq`, `hash`, `decode`, `encode`,
   `codec`, and `tagged`
-- `sts:concurrency` owning `AsyncResult<T, E>`, `TaskGroup`, and the normal structured-concurrency
+- `sts:concurrency` owning the portable `AsyncResult<T, E>`, `Task`, and cancellation-failure
   teaching surface
 - `sts:concurrency/task` owning the `Task<T, E>` contract and `Task.*` helpers
 - `sts:hkt` owning low-level higher-kinded type machinery

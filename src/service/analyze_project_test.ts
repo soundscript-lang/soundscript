@@ -2734,6 +2734,7 @@ Deno.test('analyzeProject accepts browser-supported portable stdlib modules', as
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       "import { Task } from 'sts:concurrency/task';",
+      "import { Task as RootTask, type AsyncResult } from 'sts:concurrency';",
       "import { hasCapability } from 'sts:capabilities';",
       "import { log } from 'sts:console';",
       "import { Duration, sleep } from 'sts:time';",
@@ -2741,12 +2742,14 @@ Deno.test('analyzeProject accepts browser-supported portable stdlib modules', as
       "import { Bytes } from 'sts:bytes';",
       '',
       'const task = Task.map(Task.succeed(1), (value: number) => value + 1);',
+      'const rootTask: AsyncResult<number> = RootTask.succeed(1)();',
       'const path = join("assets", "app.js");',
       'const bytes = Bytes.fromString(path);',
       'const ready = hasCapability("fetch");',
       'log(path, bytes, ready);',
       'void sleep(Duration.milliseconds(1));',
       'void task;',
+      'void rootTask;',
       '',
     ].join('\n'),
   });
