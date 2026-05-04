@@ -8852,7 +8852,7 @@ Deno.test('compiler SourceHIR semantic lowering emits runnable template string i
   const wasm = await Deno.readFile(wasmPath);
   const instance = await WebAssembly.instantiate(wasm);
   const exports = await createWasmGcWrappedExports(wrapperPath, instance.instance);
-  const length = exports['main.ts:length'];
+  const length = exports['main.ts:length'] as (value: string) => number;
   assertEquals(typeof length, 'function');
   assertEquals(length('A😀'), 12);
 });
@@ -19337,7 +19337,7 @@ Deno.test('compiler wasm-gc wrapper glue adapts Map params with union payloads a
   instanceCell.instance = instance;
   const exports = await createWasmGcWrappedExports(wrapperPath, instanceCell);
   const forward = exports['main.ts:forward'] as (map: Map<string, string | number>) => number;
-  assertEquals(forward(new Map([['left', 2], ['right', 'abc']])), 5);
+  assertEquals(forward(new Map<string, string | number>([['left', 2], ['right', 'abc']])), 5);
 });
 
 Deno.test('compiler wasm-gc wrapper glue adapts Map results with array payloads across JS boundaries', async () => {
@@ -19563,7 +19563,7 @@ Deno.test('compiler wasm-gc wrapper glue adapts Set params with union payloads a
         'host.d.ts:score': (set: Set<string | number>): number => {
           assertEquals(set instanceof Set, true);
           assertEquals([...set.values()], [2, 'abc']);
-          return [...set.values()].reduce(
+          return [...set.values()].reduce<number>(
             (total, value) => total + (typeof value === 'number' ? value : value.length),
             0,
           );

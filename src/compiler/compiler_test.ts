@@ -3747,7 +3747,7 @@ compilerIntegrationTest(
     if (typeof exported !== 'function') {
       throw new Error(`Expected exported function "${exportName}".`);
     }
-    assertEquals(exported(new Map([['left', 4], ['right', 'abc']])), 2);
+    assertEquals(exported(new Map<string, string | number>([['left', 4], ['right', 'abc']])), 2);
   },
 );
 
