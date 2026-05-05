@@ -6829,7 +6829,9 @@ function rejectUnsupportedClassMembers(
     return true;
   }
   const computedMember = classInfo.members.find((member) =>
-    'computedName' in member && member.computedName !== undefined
+    'computedName' in member &&
+    member.computedName !== undefined &&
+    (member.computedName.kind !== 'literal' || member.computedName.literalKind !== 'string')
   );
   if (computedMember) {
     context.unsupportedKinds.add(`class_member:computed:${classInfo.name}`);
@@ -6902,11 +6904,15 @@ function lowerClassConstructionDeclaration(
     }
     const value = lowerExpression(property.initializer, context);
     statements.push(...takePendingStatements(context));
-    const valueName = nextTempLocalName(context, `class_${classInfo.name}_${property.name}`);
+    const fieldName = property.computedName && property.computedName.kind === 'literal' &&
+      property.computedName.literalKind === 'string'
+      ? property.computedName.text
+      : property.name;
+    const valueName = nextTempLocalName(context, `class_${classInfo.name}_${fieldName}`);
     addLocal(context, valueName, value.representation);
     statements.push({ kind: 'local_set', name: valueName, value });
     fieldValueNames.push(valueName);
-    fields.push({ name: property.name, representation: value.representation });
+    fields.push({ name: fieldName, representation: value.representation });
   }
   const objectLocal: SourceSemanticObjectLocal = {
     family: 'specialized_object',
