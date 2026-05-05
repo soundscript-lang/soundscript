@@ -5412,15 +5412,17 @@ Deno.test('compileProject selects source-hir for for-of over Set values', async 
 Deno.test('compileProject selects source-hir for discriminated union narrowing', async () => {
   const tempDirectory = await createTempProject([
     { path: 'tsconfig.json', contents: JSON.stringify({ compilerOptions: { strict: true, noEmit: true, target: 'ES2022', module: 'ESNext', lib: ['ES2022'] }, include: ['src/**/*.ts'], soundscript: { target: 'wasm-node' } }, null, 2) },
-    { path: 'src/index.ts', contents: `type Circle = { kind: string, radius: number }; type Square = { kind: string, side: number }; export function area(shape: Circle | Square): number { if (shape.kind === "circle") { return shape.radius; } return shape.side; }` },
+    { path: 'src/index.ts', contents: `type Circle = { kind: "circle", radius: number }; type Square = { kind: "square", side: number }; function area(shape: Circle | Square): number { if (shape.kind === "circle") { return shape.radius; } return shape.side; } export function score(): number { return area({ kind: "circle", radius: 5 }); }` },
   ]);
   const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
   const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
   const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
   const plan = createWasmGcModulePlan(semantic, createRuntimeManifestFromSemanticModule(semantic));
   assertEquals(plan.functionPlans.every(f => f.bodyStatus === 'emittable'), true);
-  const wat = emitWasmGcModulePlan(plan);
-  assertEquals(wat.includes('jspi'), false);
+  const result = compileProject({ projectPath: join(tempDirectory, 'tsconfig.json'), workingDirectory: tempDirectory });
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
 });
 
 Deno.test('compiler SourceHIR semantic lowering preserves primitive structured control flow', async () => {

@@ -10713,7 +10713,11 @@ export function createSemanticModuleFromSourceHIR(
     stringLiteralCodeUnits: stringLiterals.map(codeUnitsForString),
     typeSnapshots: sharedFacts.typeSnapshots as SemanticModuleIR['typeSnapshots'],
     boundarySurfaces,
-    objectLayouts: [...objectLayoutsByKey.values()].sort((left, right) =>
+    objectLayouts: [...objectLayoutsByKey.values(), ...sharedFacts.objectLayouts]
+      .filter((layout, index, self) =>
+        self.findIndex((l) => l.name === layout.name && l.family === layout.family) === index
+      )
+      .sort((left, right) =>
       left.family === right.family
         ? left.name.localeCompare(right.name)
         : left.family.localeCompare(right.family)
