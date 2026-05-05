@@ -41,7 +41,7 @@ function isDeclarationRootFileName(fileName: string): boolean {
   return fileName.endsWith('.d.ts') || fileName.endsWith('.d.mts') || fileName.endsWith('.d.cts');
 }
 import { CompilerUnsupportedError } from './errors.ts';
-import { lowerProgramToCompilerIR, validateHonestHeapBoundarySurfaces } from './lower.ts';
+import { validateHonestHeapBoundarySurfaces } from './legacy_boundary_validation.ts';
 import { createCompilerIrDebugSnapshot } from './compiler_ir_debug.ts';
 import {
   compilerValueTypeForStorage,
@@ -60,7 +60,6 @@ import {
 import { emitWasmGcModulePlan } from './wasm_gc_emitter.ts';
 import type { WasmGcModulePlanIR } from './wasm_gc_backend_ir.ts';
 import { emitWasmGcWrapperModule } from './wasm_gc_wrapper_emitter.ts';
-import { emitCompilerModuleToWat } from './wat_emitter.ts';
 import type { SemanticModuleIR, SemanticStatementIR } from './semantic_ir.ts';
 
 export interface CompileProjectOptions {
@@ -825,19 +824,19 @@ export function compileProject(options: CompileProjectOptions): CompileProjectRe
             }),
           }),
         }
-        : (() => {
-          const module = lowerProgramToCompilerIR(program, dirname(options.projectPath));
-          return {
-            backend: 'legacy-wasm' as const,
-            backendPlanSource: undefined,
-            toolchain: packageCompilerOutput({
-              jsHostImports: module.jsHostImports,
-              projectPath: options.projectPath,
-              runtimeTarget: runtime.target,
-              wat: emitCompilerModuleToWat(module),
-            }),
-          };
-        })();
+        : undefined;
+      if (!packaged) {
+        return {
+          diagnostics: [{
+            source: 'wasm-gc',
+            code: 'COMPILER2001',
+            category: 'error' as const,
+            message: 'The module could not be compiled through the wasm-gc backend.',
+          }],
+          output: 'The module could not be compiled through the wasm-gc backend.',
+          exitCode: 1,
+        };
+      }
       const { backend, backendPlanSource, toolchain } = packaged;
       return {
         artifacts: {

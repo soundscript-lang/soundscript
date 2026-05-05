@@ -4,8 +4,6 @@ import ts from 'typescript';
 
 import { createSoundStdlibCompilerHost } from '../../src/bundled/sound_stdlib.ts';
 import { compileProject } from '../../src/compiler/compile_project.ts';
-import type { CompilerModuleIR } from '../../src/compiler/ir.ts';
-import { lowerProgramToCompilerIR } from '../../src/compiler/lower.ts';
 import type {
   CompilerRuntimeAdaptObjectValueIR,
   CompilerRuntimeAllocateFallbackObjectIR,
@@ -295,12 +293,6 @@ export function createCompilerProgram(projectPath: string): ts.Program {
   });
 }
 
-export function lowerTempProjectToCompilerIR(tempDirectory: string): CompilerModuleIR {
-  const projectPath = join(tempDirectory, 'tsconfig.json');
-  const program = createCompilerProgram(projectPath);
-  return lowerProgramToCompilerIR(program, dirname(projectPath));
-}
-
 export function compileCheckedInProject(relativeProjectDirectory: string) {
   const projectDirectory = join(REPO_ROOT, relativeProjectDirectory);
   return {
@@ -312,162 +304,12 @@ export function compileCheckedInProject(relativeProjectDirectory: string) {
   };
 }
 
-export function lowerCheckedInProjectToCompilerIR(
-  relativeProjectDirectory: string,
-): CompilerModuleIR {
-  const projectDirectory = join(REPO_ROOT, relativeProjectDirectory);
-  const program = createCompilerProgram(join(projectDirectory, 'tsconfig.json'));
-  return lowerProgramToCompilerIR(program, projectDirectory);
-}
-
-export function getAllRuntimeOperations(moduleIR: CompilerModuleIR) {
-  return moduleIR.runtime?.functions.flatMap((runtimeFunction) => runtimeFunction.operations) ?? [];
-}
-
-export function assertExecutableOrdinaryObjectLowering(
-  moduleIR: CompilerModuleIR,
-  options: {
-    shapeName: string;
-    fieldNames: string[];
-    allocationCount: number;
-    fieldReadIndices: number[];
-  },
-): {
-  allocations: CompilerRuntimeAllocateSpecializedObjectIR[];
-  fieldReads: CompilerRuntimeGetSpecializedObjectFieldIR[];
-  representation: CompilerRuntimeSpecializedObjectRepresentationIR;
-} {
-  if (!moduleIR.runtime) {
-    throw new Error('Expected lowering to produce runtime IR.');
-  }
-
-  const representation = moduleIR.runtime.representations.find((
-    runtimeRepresentation,
-  ): runtimeRepresentation is CompilerRuntimeSpecializedObjectRepresentationIR =>
-    runtimeRepresentation.kind === 'specialized_object_representation' &&
-    runtimeRepresentation.name === options.shapeName
-  );
-  if (!representation) {
-    throw new Error(`Expected specialized object representation ${options.shapeName}.`);
-  }
-
-  const operations = getAllRuntimeOperations(moduleIR);
-  const allocations = operations.filter((
-    operation,
-  ): operation is CompilerRuntimeAllocateSpecializedObjectIR =>
-    operation.kind === 'allocate_specialized_object'
-  );
-  const fieldReads = operations.filter((
-    operation,
-  ): operation is CompilerRuntimeGetSpecializedObjectFieldIR =>
-    operation.kind === 'get_specialized_object_field'
-  );
-
-  assertEquals(
-    operations.filter((operation) =>
-      operation.kind === 'adapt_value' && operation.family === 'object'
-    ).length,
-    0,
-  );
-  assertEquals(representation.fields.map((field) => field.name), options.fieldNames);
-  assertEquals(allocations.length, options.allocationCount);
-  assertEquals(fieldReads.map((operation) => operation.fieldIndex), options.fieldReadIndices);
-  assertEquals(
-    allocations.every((operation) => operation.representation.name === options.shapeName),
-    true,
-  );
-  assertEquals(
-    fieldReads.every((operation) => operation.representation.name === options.shapeName),
-    true,
-  );
-
-  return { allocations, fieldReads, representation };
-}
-
-export function assertObjectGeneralizationLowering(
-  moduleIR: CompilerModuleIR,
-  options: {
-    shapeName: string;
-    generalizationCount: number;
-  },
-): {
-  allocations: CompilerRuntimeAllocateSpecializedObjectIR[];
-  generalizations: CompilerRuntimeAdaptObjectValueIR[];
-  representation: CompilerRuntimeSpecializedObjectRepresentationIR;
-} {
-  if (!moduleIR.runtime) {
-    throw new Error('Expected lowering to produce runtime IR.');
-  }
-
-  const representation = moduleIR.runtime.representations.find((
-    runtimeRepresentation,
-  ): runtimeRepresentation is CompilerRuntimeSpecializedObjectRepresentationIR =>
-    runtimeRepresentation.kind === 'specialized_object_representation' &&
-    runtimeRepresentation.name === options.shapeName
-  );
-  if (!representation) {
-    throw new Error(`Expected specialized object representation ${options.shapeName}.`);
-  }
-
-  const operations = getAllRuntimeOperations(moduleIR);
-  const allocations = operations.filter((
-    operation,
-  ): operation is CompilerRuntimeAllocateSpecializedObjectIR =>
-    operation.kind === 'allocate_specialized_object'
-  );
-  const generalizations = operations.filter((
-    operation,
-  ): operation is CompilerRuntimeAdaptObjectValueIR =>
-    operation.kind === 'adapt_value' && operation.family === 'object'
-  );
-
-  assertEquals(
-    allocations.every((operation) => operation.representation.name === options.shapeName),
-    true,
-  );
-  assertEquals(generalizations.length, options.generalizationCount);
-  assertEquals(
-    generalizations.every((operation) =>
-      operation.fromRepresentation.name === options.shapeName &&
-      operation.toRepresentation.name === 'object.fallback'
-    ),
-    true,
-  );
-
-  return { allocations, generalizations, representation };
-}
-
-export function assertFallbackObjectRuntimeOperations(moduleIR: CompilerModuleIR): {
-  allocations: CompilerRuntimeAllocateFallbackObjectIR[];
-  generalizations: CompilerRuntimeAdaptObjectValueIR[];
-  propertyGets: CompilerRuntimeGetFallbackObjectPropertyIR[];
-  propertySets: CompilerRuntimeSetFallbackObjectPropertyIR[];
-} {
-  if (!moduleIR.runtime) {
-    throw new Error('Expected lowering to produce runtime IR.');
-  }
-
-  const operations = getAllRuntimeOperations(moduleIR);
-  return {
-    allocations: operations.filter((
-      operation,
-    ): operation is CompilerRuntimeAllocateFallbackObjectIR =>
-      operation.kind === 'allocate_fallback_object'
-    ),
-    generalizations: operations.filter((
-      operation,
-    ): operation is CompilerRuntimeAdaptObjectValueIR =>
-      operation.kind === 'adapt_value' && operation.family === 'object'
-    ),
-    propertyGets: operations.filter((
-      operation,
-    ): operation is CompilerRuntimeGetFallbackObjectPropertyIR =>
-      operation.kind === 'get_fallback_object_property'
-    ),
-    propertySets: operations.filter((
-      operation,
-    ): operation is CompilerRuntimeSetFallbackObjectPropertyIR =>
-      operation.kind === 'set_fallback_object_property'
-    ),
-  };
+export function nullishSingleElementArrayOrThrowIfNotNull<T extends Array<unknown>>(
+  value: T | undefined | null,
+): NonNullable<T> | undefined {
+  const result = value ?? undefined;
+  if (result && result.length === 0) return undefined;
+  if (result && result.length === 1) return result as NonNullable<T>;
+  if (result && result.length > 1) throw new Error('Expected zero or one elements.');
+  return undefined;
 }

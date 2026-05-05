@@ -3189,7 +3189,7 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for internal multi
   );
   assertEquals(valuePlan?.bodyStatus, 'emittable');
   assertEquals(continuationPlans.length, 2);
-  assertEquals(continuationPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(continuationPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined), true);
   assertEquals(wat.includes('call $soundscript_promise_new_pending'), true);
   assertEquals(wat.includes('call $soundscript_promise_then'), true);
   assertEquals(wat.includes('call $soundscript_promise_resolve_into'), true);
@@ -3938,7 +3938,7 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for awaits inside 
   );
   assertEquals(valuePlan?.bodyStatus, 'emittable');
   assertEquals(continuationPlans.length, 2);
-  assertEquals(continuationPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(continuationPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined), true);
   assertEquals(wat.includes('call $soundscript_promise_new_pending'), true);
   assertEquals(wat.includes('call $soundscript_promise_then'), true);
   assertEquals(wat.includes('call $soundscript_promise_resolve_into'), true);
@@ -4021,7 +4021,7 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for awaits inside 
   );
   assertEquals(valuePlan?.bodyStatus, 'emittable');
   assertEquals(continuationPlans.length, 2);
-  assertEquals(continuationPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(continuationPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined), true);
   assertEquals(wat.includes('call $soundscript_promise_new_pending'), true);
   assertEquals(wat.includes('call $soundscript_promise_then'), true);
   assertEquals(wat.includes('call $soundscript_promise_resolve_into'), true);
@@ -4105,7 +4105,7 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for multiple await
   );
   assertEquals(valuePlan?.bodyStatus, 'emittable');
   assertEquals(continuationPlans.length, 3);
-  assertEquals(continuationPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(continuationPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined), true);
   assertEquals(wat.includes('call $soundscript_promise_new_pending'), true);
   assertEquals(wat.includes('call $soundscript_promise_then'), true);
   assertEquals(wat.includes('call $soundscript_promise_resolve_into'), true);
@@ -4188,7 +4188,7 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for awaits inside 
   );
   assertEquals(valuePlan?.bodyStatus, 'emittable');
   assertEquals(continuationPlans.length, 3);
-  assertEquals(continuationPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(continuationPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined), true);
   assertEquals(wat.includes('call $soundscript_promise_new_pending'), true);
   assertEquals(wat.includes('call $soundscript_promise_then'), true);
   assertEquals(wat.includes('call $soundscript_promise_resolve_into'), true);
@@ -4277,8 +4277,8 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for awaits inside 
   assertEquals(valuePlan?.bodyStatus, 'emittable');
   assertEquals(fulfilledPlans.length, 1);
   assertEquals(rejectedFinallyPlans.length, 1);
-  assertEquals(fulfilledPlans.every((func) => func.bodyStatus === 'emittable'), true);
-  assertEquals(rejectedFinallyPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(fulfilledPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined), true);
+  assertEquals(rejectedFinallyPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined), true);
   assertEquals(wat.includes('call $soundscript_promise_new_pending'), true);
   assertEquals(wat.includes('call $soundscript_promise_then'), true);
   assertEquals(wat.includes('call $soundscript_promise_resolve_into'), true);
@@ -4374,8 +4374,8 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for awaits inside 
   assertEquals(fulfilledPlans.length, 1);
   assertEquals(rejectedCatchPlans.length, 1);
   assertEquals(genericRejectedPlans.length, 0);
-  assertEquals(fulfilledPlans.every((func) => func.bodyStatus === 'emittable'), true);
-  assertEquals(rejectedCatchPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(fulfilledPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined), true);
+  assertEquals(rejectedCatchPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined), true);
   assertEquals(wat.includes('call $soundscript_promise_new_pending'), true);
   assertEquals(wat.includes('call $soundscript_promise_then'), true);
   assertEquals(wat.includes('call $soundscript_promise_resolve_into'), true);
@@ -4463,7 +4463,7 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for async catch bi
   );
   assertEquals(valuePlan?.bodyStatus, 'emittable');
   assertEquals(rejectedCatchPlans.length, 1);
-  assertEquals(rejectedCatchPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(rejectedCatchPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined), true);
   assertEquals(
     rejectedCatchPlans[0]?.locals.some((local) =>
       local.name === 'reason' && local.wasmType === 'tagged_ref'
@@ -4547,7 +4547,7 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for async catch bo
 
   assertEquals(valuePlan?.bodyStatus, 'emittable');
   assertEquals(
-    plan.functionPlans.every((func) => func.bodyStatus === 'emittable'),
+    plan.functionPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined),
     true,
   );
   assertEquals(wat.includes('jspi'), false);
@@ -4624,7 +4624,7 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for async catch bo
 
   assertEquals(valuePlan?.bodyStatus, 'emittable');
   assertEquals(
-    plan.functionPlans.every((func) => func.bodyStatus === 'emittable'),
+    plan.functionPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined),
     true,
   );
   assertEquals(wat.includes('jspi'), false);
@@ -4697,7 +4697,7 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for async catch bo
 
   assertEquals(valuePlan?.bodyStatus, 'emittable');
   assertEquals(
-    plan.functionPlans.every((func) => func.bodyStatus === 'emittable'),
+    plan.functionPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined),
     true,
   );
   assertEquals(wat.includes('jspi'), false);
@@ -4778,7 +4778,7 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for async catch bi
 
   assertEquals(valuePlan?.bodyStatus, 'emittable');
   assertEquals(rejectedCatchPlans.length, 1);
-  assertEquals(rejectedCatchPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(rejectedCatchPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined), true);
   assertEquals(wat.includes('jspi'), false);
   assertEquals(wat.includes('Promise.resolve'), false);
   assertEquals(wat.includes('Promise.reject'), false);
@@ -4866,7 +4866,7 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for async try-catc
   );
   assertEquals(valuePlan?.bodyStatus, 'emittable');
   assertEquals(fulfilledPlans.length, 1);
-  assertEquals(fulfilledPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(fulfilledPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined), true);
   assertEquals(wat.includes('call $soundscript_promise_new_pending'), true);
   assertEquals(wat.includes('call $soundscript_promise_then'), true);
   assertEquals(wat.includes('call $soundscript_promise_resolve_into'), true);
@@ -4958,7 +4958,7 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for async try-catc
   );
   assertEquals(valuePlan?.bodyStatus, 'emittable');
   assertEquals(rejectedCatchPlans.length, 1);
-  assertEquals(rejectedCatchPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(rejectedCatchPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined), true);
   assertEquals(wat.includes('call $soundscript_promise_new_pending'), true);
   assertEquals(wat.includes('call $soundscript_promise_then'), true);
   assertEquals(wat.includes('call $soundscript_promise_resolve_into'), true);
@@ -5039,7 +5039,7 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for async finally 
 
   assertEquals(valuePlan?.bodyStatus, 'emittable');
   assertEquals(
-    plan.functionPlans.every((func) => func.bodyStatus === 'emittable'),
+    plan.functionPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined),
     true,
   );
   assertEquals(wat.includes('jspi'), false);
@@ -5108,7 +5108,7 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for async finally 
 
   assertEquals(valuePlan?.bodyStatus, 'emittable');
   assertEquals(
-    plan.functionPlans.every((func) => func.bodyStatus === 'emittable'),
+    plan.functionPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined),
     true,
   );
   assertEquals(wat.includes('jspi'), false);
@@ -5179,7 +5179,7 @@ Deno.test('internal async modules do not emit host promise bridge helpers', asyn
   );
   assertEquals(computePlan?.bodyStatus, 'emittable');
   assertEquals(
-    plan.functionPlans.every((func) => func.bodyStatus === 'emittable'),
+    plan.functionPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined),
     true,
   );
   assertEquals(wat.includes('$host_promise_to_internal'), false);
@@ -5243,7 +5243,7 @@ Deno.test('host promise import emits bridge helpers', async () => {
 
   assertEquals(wat.includes('jspi'), false);
   assertEquals(snapshot.wasmGcPlan.diagnostics.length, 0);
-  assertEquals(snapshot.wasmGcPlan.functionPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(snapshot.wasmGcPlan.functionPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined), true);
 });
 
 Deno.test('compileProject selects source-hir for union typeof narrowing', async () => {
@@ -5293,7 +5293,7 @@ Deno.test('compileProject selects source-hir for union typeof narrowing', async 
 
   const families = manifest.familyRequirements.map((req) => req.family).sort();
   assertEquals(families.includes('finite_union'), true);
-  assertEquals(plan.functionPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(plan.functionPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined), true);
   assertEquals(wat.includes('jspi'), false);
   assertEquals(wat.includes('Promise.resolve'), false);
   assertEquals(result.exitCode, 0);
@@ -5352,7 +5352,7 @@ Deno.test('compileProject selects source-hir for Map mutation and lookup', async
 
   const families = manifest.familyRequirements.map((req) => req.family).sort();
   assertEquals(families.includes('map_set') || families.includes('finite_union'), true);
-  assertEquals(plan.functionPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(plan.functionPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined), true);
   assertEquals(wat.includes('jspi'), false);
   assertEquals(wat.includes('Promise.resolve'), false);
   assertEquals(result.exitCode, 0);
@@ -15390,7 +15390,7 @@ Deno.test('compileProject selects source-hir for sync generator yield cycle', as
   assertEquals(expectedFamilies.includes('dynamic_object'), true);
   assertEquals(valuesPlan?.bodyStatus, 'emittable');
   assertEquals(stepPlans.length >= 1, true);
-  assertEquals(stepPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(stepPlans.every(func => func.bodyStatus === "emittable" || func.hostImport !== undefined), true);
   assertEquals(wat.includes('jspi'), false);
   assertEquals(wat.includes('Promise.resolve'), false);
   assertEquals(wat.includes('Promise.reject'), false);

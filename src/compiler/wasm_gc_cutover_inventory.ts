@@ -163,7 +163,7 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
 ];
 
 export const WASM_GC_LEGACY_FEATURE_FREEZE = {
-  legacyFiles: ['src/compiler/lower.ts', 'src/compiler/wat_emitter.ts'],
+  legacyFiles: [] as const,
   policy:
-    'New core Wasm backend feature work must start in SourceHIR, shared semantic facts, compiler SemanticIR, RuntimeManifestIR, or WasmGcModulePlanIR before touching legacy lowering.',
+    'Legacy lower.ts, wat_emitter.ts, and tagged_test.ts have been deleted. All core Wasm backend feature work routes through SourceHIR, shared semantic facts, compiler SemanticIR, RuntimeManifestIR, and WasmGcModulePlanIR.',
 } as const;
