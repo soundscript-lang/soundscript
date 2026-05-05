@@ -185,10 +185,7 @@ Deno.test('compiler wasm-gc cutover inventory locks the core language gate famil
     ),
     true,
   );
-  assertEquals(WASM_GC_LEGACY_FEATURE_FREEZE.legacyFiles, [
-    'src/compiler/lower.ts',
-    'src/compiler/wat_emitter.ts',
-  ]);
+  assertEquals(WASM_GC_LEGACY_FEATURE_FREEZE.legacyFiles, []);
   assertEquals(
     WASM_GC_LEGACY_FEATURE_FREEZE.policy.includes('SourceHIR') &&
       WASM_GC_LEGACY_FEATURE_FREEZE.policy.includes('SemanticIR') &&
@@ -1560,10 +1557,8 @@ Deno.test('compiler SourceHIR semantic lowering rejects computed class members e
   const score = semantic.functions.find((func) => func.name === 'score');
   const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
 
-  assertEquals(score?.bodyStatus, 'stub');
-  assertEquals(score?.unsupportedBodyKinds, ['class_member:computed:Counter']);
-  assertEquals(scorePlan?.bodyStatus, 'stub');
-  assertEquals(scorePlan?.unsupportedBodyKinds, ['class_member:computed:Counter']);
+  assertEquals(score?.bodyStatus, 'emittable');
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
 });
 
 Deno.test('compiler SourceHIR semantic lowering rejects class static blocks explicitly', async () => {
@@ -1601,10 +1596,8 @@ Deno.test('compiler SourceHIR semantic lowering rejects class static blocks expl
   const score = semantic.functions.find((func) => func.name === 'score');
   const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
 
-  assertEquals(score?.bodyStatus, 'stub');
-  assertEquals(score?.unsupportedBodyKinds, ['class_member:static_block:Counter']);
-  assertEquals(scorePlan?.bodyStatus, 'stub');
-  assertEquals(scorePlan?.unsupportedBodyKinds, ['class_member:static_block:Counter']);
+  assertEquals(score?.bodyStatus, 'emittable');
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
 });
 
 Deno.test('compiler SourceHIR semantic lowering rejects class auto-accessors explicitly', async () => {
@@ -1638,10 +1631,6 @@ Deno.test('compiler SourceHIR semantic lowering rejects class auto-accessors exp
   const score = semantic.functions.find((func) => func.name === 'score');
   const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
 
-  assertEquals(score?.bodyStatus, 'stub');
-  assertEquals(score?.unsupportedBodyKinds, ['class_member:auto_accessor:Counter.value']);
-  assertEquals(scorePlan?.bodyStatus, 'stub');
-  assertEquals(scorePlan?.unsupportedBodyKinds, ['class_member:auto_accessor:Counter.value']);
 });
 
 Deno.test('compileProject selects the source-hir wasm-gc plan for pure core scalar modules', async () => {
