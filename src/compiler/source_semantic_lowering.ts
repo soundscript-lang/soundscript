@@ -3574,14 +3574,15 @@ function lowerForOfStatement(
     iterableExpr.callee.object.kind === 'identifier') {
     const objectName = iterableExpr.callee.object.name;
     const methodName = iterableExpr.callee.property;
-    if ((methodName === 'values' || methodName === 'keys') && iterableExpr.args.length === 0) {
+    if ((methodName === 'values' || methodName === 'keys' || methodName === 'entries') && iterableExpr.args.length === 0) {
       const mapLocal = context.mapLocals.get(objectName);
       if (mapLocal) {
+        const stmtKind = methodName === 'keys' ? 'map_keys' : 'map_values';
         return emitMapSetForOfIteration(
           statement,
           context,
           objectName,
-          methodName === 'keys' ? 'map_keys' : 'map_values',
+          stmtKind,
           mapLocal.valueRepresentation,
         );
       }
