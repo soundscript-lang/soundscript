@@ -6840,7 +6840,6 @@ function rejectUnsupportedClassMembers(
   const staticBlock = classInfo.members.find((member) => member.kind === 'static_block');
   if (staticBlock) {
     context.unsupportedKinds.add(`class_member:static_block:${classInfo.name}`);
-    return true;
   }
   const autoAccessor = classInfo.members.find((member) => member.kind === 'auto_accessor');
   if (autoAccessor) {
