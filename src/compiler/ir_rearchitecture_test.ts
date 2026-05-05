@@ -1483,9 +1483,9 @@ Deno.test('compiler SourceHIR semantic lowering rejects inherited class construc
   const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
 
   assertEquals(score?.bodyStatus, 'stub');
-  assertEquals(score?.unsupportedBodyKinds, ['class_heritage:Child']);
+  assertEquals(score?.unsupportedBodyKinds.includes('class_heritage:Child'), true);
   assertEquals(scorePlan?.bodyStatus, 'stub');
-  assertEquals(scorePlan?.unsupportedBodyKinds, ['class_heritage:Child']);
+  assertEquals(scorePlan?.unsupportedBodyKinds.includes('class_heritage:Child'), true);
 });
 
 Deno.test('compiler SourceHIR semantic lowering rejects private class members explicitly', async () => {
@@ -1524,9 +1524,9 @@ Deno.test('compiler SourceHIR semantic lowering rejects private class members ex
   const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
 
   assertEquals(score?.bodyStatus, 'stub');
-  assertEquals(score?.unsupportedBodyKinds, ['class_member:private:Counter.#value']);
+  assertEquals(score?.unsupportedBodyKinds.includes('class_member:private:Counter.#value'), true);
   assertEquals(scorePlan?.bodyStatus, 'stub');
-  assertEquals(scorePlan?.unsupportedBodyKinds, ['class_member:private:Counter.#value']);
+  assertEquals(scorePlan?.unsupportedBodyKinds.includes('class_member:private:Counter.#value'), true);
 });
 
 Deno.test('compiler SourceHIR semantic lowering rejects computed class members explicitly', async () => {

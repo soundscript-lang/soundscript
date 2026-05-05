@@ -6816,7 +6816,7 @@ function rejectUnsupportedClassRuntimeHeritage(
     return false;
   }
   context.unsupportedKinds.add(`class_heritage:${classInfo.name}`);
-  return true;
+  return false;
 }
 
 function rejectUnsupportedClassMembers(
@@ -6826,7 +6826,6 @@ function rejectUnsupportedClassMembers(
   const privateMember = classInfo.members.find((member) => member.privacy === 'private');
   if (privateMember) {
     context.unsupportedKinds.add(`class_member:private:${classInfo.name}.${privateMember.name}`);
-    return true;
   }
   const computedMember = classInfo.members.find((member) =>
     'computedName' in member &&
@@ -6882,7 +6881,7 @@ function lowerClassConstructionDeclaration(
   const properties = classInfo.members.filter((
     member,
   ): member is Extract<SourceClassMemberIR, { kind: 'property' }> =>
-    member.kind === 'property' && !member.static
+    member.kind === 'property' && !member.static && member.privacy !== 'private'
   );
   if (properties.some((property) => !property.initializer)) {
     context.unsupportedKinds.add('class_property_initializer');
