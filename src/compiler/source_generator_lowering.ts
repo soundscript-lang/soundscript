@@ -35,6 +35,7 @@ interface SourceGeneratorSegment {
 
 type SourceGeneratorTerminal =
   | { kind: 'yield'; expression?: SourceExpressionIR; resumeBindingName?: string; nextPc: number }
+  | { kind: 'yield_star'; expression: SourceExpressionIR; nextPc: number }
   | { kind: 'return'; expression?: SourceExpressionIR }
   | { kind: 'throw'; expression?: SourceExpressionIR }
   | { kind: 'implicit' };
@@ -87,6 +88,28 @@ export function buildSourceGeneratorFramePlan(
   for (const statement of statements) {
     switch (statement.kind) {
       case 'expression_statement': {
+        if (isYieldStarExpressionStatement(statement)) {
+          const yieldExpr = (statement.expression as { kind: 'yield_star_expression'; expression: SourceExpressionIR });
+          const expanded = expandYieldStarToSegments(yieldExpr.expression, currentPc, currentStatements);
+          if (expanded) {
+            segments.push(...expanded);
+            currentPc += expanded.length;
+            currentStatements = [];
+            break;
+          }
+          segments.push({
+            pc: currentPc,
+            statements: currentStatements,
+            terminal: {
+              kind: 'yield_star',
+              expression: yieldExpr.expression,
+              nextPc: currentPc + 1,
+            },
+          });
+          currentPc += 1;
+          currentStatements = [];
+          break;
+        }
         if (isYieldExpressionStatement(statement)) {
           const yieldExpr = (statement.expression as { kind: 'yield_expression'; expression?: SourceExpressionIR });
           segments.push({
@@ -147,6 +170,39 @@ export function buildSourceGeneratorFramePlan(
   });
 
   return { segments };
+}
+
+function isYieldStarExpressionStatement(statement: SourceStatementIR): boolean {
+  return statement.kind === 'expression_statement' &&
+    typeof statement.expression === 'object' &&
+    statement.expression !== null &&
+    'kind' in statement.expression &&
+    (statement.expression as { kind: string }).kind === 'yield_star_expression';
+}
+
+function expandYieldStarToSegments(
+  expression: SourceExpressionIR,
+  startPc: number,
+  currentStatements: readonly SourceStatementIR[],
+): readonly SourceGeneratorSegment[] | undefined {
+  if (expression.kind !== 'array_literal') return undefined;
+  const elements = expression.elements;
+  if (elements.length === 0) return [
+    { pc: startPc, statements: currentStatements, terminal: { kind: 'implicit' } },
+  ];
+  const segments: SourceGeneratorSegment[] = [];
+  for (let i = 0; i < elements.length; i++) {
+    segments.push({
+      pc: startPc + i,
+      statements: i === 0 ? currentStatements : [],
+      terminal: {
+        kind: 'yield',
+        expression: elements[i],
+        nextPc: startPc + i + 1,
+      },
+    });
+  }
+  return segments;
 }
 
 function isYieldExpressionStatement(statement: SourceStatementIR): boolean {
@@ -465,6 +521,9 @@ function lowerGeneratorStepClosureBody(
           );
           break;
         }
+        case 'yield_star':
+          context.unsupportedKinds.add('yield_star_not_supported');
+          break;
         case 'return': {
           const returnValue = segment.terminal.expression
             ? lowerExpression(segment.terminal.expression, context)

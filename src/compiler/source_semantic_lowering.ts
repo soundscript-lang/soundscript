@@ -2483,6 +2483,39 @@ function lowerUnionBinaryExpression(
   return undefined;
 }
 
+function lowerUnionInCheckExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'binary_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (expression.left.kind !== 'literal' || expression.left.literalKind !== 'string') {
+    return undefined;
+  }
+  const right = expression.right;
+  if (right.kind !== 'identifier' || !context.unionLocals.has(right.name)) {
+    const lowered = lowerExpression(right, context);
+    if (lowered.representation !== 'tagged_ref') return undefined;
+  }
+  const target = lowerExpression(right, context);
+  if (target.representation !== 'tagged_ref') return undefined;
+  const propertyName = expression.left.text;
+  const untaggedName = nextTempLocalName(context, 'in_check_untagged');
+  addLocal(context, untaggedName, 'heap_ref');
+  const keyName = nextTempLocalName(context, 'in_check_key');
+  addLocal(context, keyName, 'owned_string_ref');
+  const resultName = nextTempLocalName(context, 'in_check_result');
+  addLocal(context, resultName, 'i32');
+  const repName = registerDynamicObjectLayout(context, 'union_in_check');
+  context.pendingStatements.push(
+    { kind: 'local_set', name: untaggedName, value: { kind: 'untag_heap_object', value: target, representation: 'heap_ref' } },
+    { kind: 'local_set', name: keyName, value: { kind: 'owned_string_literal', literalId: getStringLiteralId(context, propertyName), representation: 'owned_string_ref' } },
+    { kind: 'dynamic_object_has', targetName: resultName, objectName: untaggedName, representationName: repName, propertyKeyName: keyName },
+  );
+  context.runtimeFamilies.add('finite_union');
+  context.runtimeFamilies.add('dynamic_object');
+  context.runtimeFamilies.add('string');
+  return { kind: 'local_get', name: resultName, representation: 'i32' };
+}
+
 function lowerCallArguments(
   args: readonly SourceExpressionIR[],
   paramTypes: readonly SemanticTypeIR[] | undefined,
@@ -3420,6 +3453,12 @@ function lowerExpression(
       const unionBinary = lowerUnionBinaryExpression(expression, context);
       if (unionBinary) {
         return unionBinary;
+      }
+      if (expression.operator === 'in') {
+        const inCheck = lowerUnionInCheckExpression(expression, context);
+        if (inCheck) return inCheck;
+        context.unsupportedKinds.add('in_expression');
+        return { kind: 'undefined_literal', representation: 'tagged_ref' };
       }
       let left = lowerExpression(expression.left, context);
       let right = lowerExpression(expression.right, context);
@@ -4506,7 +4545,48 @@ function lowerCollectionPropertyAccessExpression(
     context.runtimeFamilies.add('array');
     return localGetExpression(targetName, 'f64');
   }
+  return collectionPropertyFromUnionLocal(expression.object.name, expression.property, context);
+}
+
+function collectionPropertyFromUnionLocal(
+  name: string,
+  property: string,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  const unionType = context.unionLocals.get(name);
+  if (!unionType) return undefined;
+  if (unionHasKindArm(unionType, 'map')) {
+    if (property === 'size') {
+      const targetName = nextTempLocalName(context, `map_size_${name}`);
+      addLocal(context, targetName, 'f64');
+      context.pendingStatements.push({ kind: 'map_size', targetName, objectName: name, storage: true });
+      context.runtimeFamilies.add('map');
+      return localGetExpression(targetName, 'f64');
+    }
+  }
+  if (unionHasKindArm(unionType, 'set')) {
+    if (property === 'size') {
+      const targetName = nextTempLocalName(context, `set_size_${name}`);
+      addLocal(context, targetName, 'f64');
+      context.pendingStatements.push({ kind: 'set_size', targetName, objectName: name, valuesArrayType: 'owned_tagged_array_ref' });
+      context.runtimeFamilies.add('set');
+      context.runtimeFamilies.add('array');
+      return localGetExpression(targetName, 'f64');
+    }
+  }
   return undefined;
+}
+
+function unionHasKindArm(unionType: unknown, kind: string): boolean {
+  if (typeof unionType === 'object' && unionType !== null && 'kind' in unionType && (unionType as { kind: string }).kind === 'finite_union') {
+    const finite = unionType as { members?: readonly { kind: string }[] };
+    return finite.members?.some(m => m.kind === kind) ?? false;
+  }
+  if (typeof unionType === 'object' && unionType !== null && 'members' in unionType) {
+    const u = unionType as { members?: readonly { kind: string }[] };
+    return u.members?.some(m => m.kind === kind) ?? false;
+  }
+  return false;
 }
 
 function lowerMapMethodCallExpression(
@@ -4615,6 +4695,10 @@ function lowerMapMethodCallExpression(
     context.runtimeFamilies.add('array');
     return localGetExpression(targetName, 'owned_tagged_array_ref');
   }
+  if (methodName === 'entries' && args.length === 0) {
+    context.unsupportedKinds.add('map_entries_not_supported');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
   return undefined;
 }
 
@@ -4700,6 +4784,10 @@ function lowerSetMethodCallExpression(
     context.runtimeFamilies.add('array');
     return localGetExpression(targetName, setLocal.valuesArrayType);
   }
+  if (methodName === 'entries' && args.length === 0) {
+    context.unsupportedKinds.add('set_entries_not_supported');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
   return undefined;
 }
 
@@ -4733,6 +4821,23 @@ function lowerCollectionMethodCallExpression(
       setLocal,
       context,
     );
+  }
+  const unionType = context.unionLocals.get(objectName);
+  if (unionType) {
+    if (unionHasKindArm(unionType, 'map')) {
+      return lowerMapMethodCallExpression(
+        objectName, expression.callee.property, expression.args,
+        { name: objectName, keyType: 'string', valueType: 'tagged_ref', valueRepresentation: 'tagged_ref', storage: false },
+        context,
+      );
+    }
+    if (unionHasKindArm(unionType, 'set')) {
+      return lowerSetMethodCallExpression(
+        objectName, expression.callee.property, expression.args,
+        { name: objectName, valueType: 'tagged_ref', valuesArrayType: 'owned_tagged_array_ref', valuesElementType: 'tagged_ref', elementRepresentation: 'tagged_ref' },
+        context,
+      );
+    }
   }
   return undefined;
 }
@@ -6005,6 +6110,8 @@ function renameSourceExpressionNames(
     case 'literal':
     case 'unknown_expression':
     case 'yield_expression':
+    case 'in_expression':
+    case 'yield_star_expression':
       return expression;
     default: {
       const exhaustiveCheck: never = expression;
@@ -6195,6 +6302,8 @@ function collectSourceExpressionIdentifierReads(
     case 'literal':
     case 'unknown_expression':
     case 'yield_expression':
+    case 'in_expression':
+    case 'yield_star_expression':
       break;
     default: {
       const exhaustiveCheck: never = expression;
@@ -6278,6 +6387,8 @@ function collectSourceExpressionAssignedNames(
     case 'literal':
     case 'unknown_expression':
     case 'yield_expression':
+    case 'in_expression':
+    case 'yield_star_expression':
       break;
     default: {
       const exhaustiveCheck: never = expression;
@@ -8330,6 +8441,8 @@ function sourceExpressionContainsAwaitExpression(expression: SourceExpressionIR)
     case 'literal':
     case 'unknown_expression':
     case 'yield_expression':
+    case 'in_expression':
+    case 'yield_star_expression':
       return false;
     default: {
       const exhaustiveCheck: never = expression;
@@ -10447,8 +10560,11 @@ function lowerGeneratorFunctionBody(
   func: SourceFunctionIR,
   context: FunctionLoweringContext,
 ): readonly SemanticStatementIR[] {
-  if (!func.generator || func.async) {
+  if (!func.generator) {
     return lowerFunctionBody(func, context);
+  }
+  if (func.async) {
+    return lowerAsyncGeneratorFunctionBody(func, context);
   }
   const plan = buildSourceGeneratorFramePlan(func.body);
   if (!plan) {
@@ -10456,6 +10572,26 @@ function lowerGeneratorFunctionBody(
     return [{ kind: 'unsupported_statement', sourceKind: 'generator' }];
   }
   context.runtimeFamilies.add('sync_generator');
+  const statements = lowerSourceGeneratorFramePlan(
+    plan,
+    context,
+    func,
+    lowerStatement,
+    lowerExpression,
+  );
+  return statements;
+}
+
+function lowerAsyncGeneratorFunctionBody(
+  func: SourceFunctionIR,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] {
+  const plan = buildSourceGeneratorFramePlan(func.body);
+  if (!plan) {
+    context.unsupportedKinds.add('async_generator_frame_plan_failed');
+    return [{ kind: 'unsupported_statement', sourceKind: 'async_generator' }];
+  }
+  context.runtimeFamilies.add('async_generator');
   const statements = lowerSourceGeneratorFramePlan(
     plan,
     context,

@@ -15410,6 +15410,35 @@ Deno.test('compileProject selects source-hir for sync generator yield cycle', as
   assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
 });
 
+Deno.test('compileProject selects source-hir for yield-star over array literal', async () => {
+  const tempDirectory = await createTempProject([
+    { path: 'tsconfig.json', contents: JSON.stringify({ compilerOptions: { strict: true, noEmit: true, target: 'ES2022', module: 'ESNext', lib: ['ES2022'] }, include: ['src/**/*.ts'], soundscript: { target: 'wasm-node' } }, null, 2) },
+    { path: 'src/index.ts', contents: `function* values(): Generator<number, void, unknown> { yield* [1, 2, 3]; } export function score(): number { return 1; }` },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const plan = createWasmGcModulePlan(semantic, createRuntimeManifestFromSemanticModule(semantic));
+  assertEquals(plan.functionPlans.every(f => f.bodyStatus === 'emittable'), true);
+  const result = compileProject({ projectPath: join(tempDirectory, 'tsconfig.json'), workingDirectory: tempDirectory });
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
+});
+
+Deno.test('compiler SourceHIR semantic lowering emits async generator frame plans', async () => {
+  const tempDirectory = await createTempProject([
+    { path: 'tsconfig.json', contents: JSON.stringify({ compilerOptions: { strict: true, noEmit: true, target: 'ES2022', module: 'ESNext', lib: ['ES2022'] }, include: ['src/**/*.ts'], soundscript: { target: 'wasm-node' } }, null, 2) },
+    { path: 'src/index.ts', contents: `async function* values(): AsyncGenerator<number, void, unknown> { yield 1; yield 2; } export function score(): number { return 1; }` },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const plan = createWasmGcModulePlan(semantic, createRuntimeManifestFromSemanticModule(semantic));
+  const wat = emitWasmGcModulePlan(plan);
+  assertEquals(plan.functionPlans.every(f => f.bodyStatus === 'emittable'), true);
+  assertEquals(wat.includes('jspi'), false);
+});
+
 Deno.test('compiler wasm-gc emitter runs minimal sync generator next calls', async () => {
   const tempDirectory = await createTempProject([
     {

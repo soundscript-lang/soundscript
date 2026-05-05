@@ -114,12 +114,25 @@ export function createCompilerIrDebugSnapshot(
         wasmGcPlan,
       };
     })()
-    : {
-      jsHostImports: [],
-      semantic: sourceSemantic,
-      runtimeManifest: sourceRuntimeManifest,
-      wasmGcPlan: sourceWasmGcPlan,
-    };
+    : (() => {
+      const jsHostImports = sharedFacts.boundarySurfaces
+        .filter((surface) => surface.direction === 'import')
+        .map((surface) => ({
+          hostImportName: surface.name,
+          hostImportCallUsed: true,
+          hostImportValueUsed: false,
+          bindingKind: 'function' as const,
+          importKind: 'named' as const,
+          importerModulePath: projectDirectory,
+          moduleSpecifier: surface.path,
+        }));
+      return {
+        jsHostImports,
+        semantic: sourceSemantic,
+        runtimeManifest: sourceRuntimeManifest,
+        wasmGcPlan: sourceWasmGcPlan,
+      };
+    })();
   return {
     kind: 'compiler_ir_debug_snapshot',
     source,

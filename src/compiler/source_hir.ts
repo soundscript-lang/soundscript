@@ -323,13 +323,15 @@ export type SourceExpressionIR =
   }
   | { kind: 'await_expression'; expression: SourceExpressionIR; span: SourceSpanIR }
   | { kind: 'yield_expression'; expression?: SourceExpressionIR; span: SourceSpanIR }
+  | { kind: 'yield_star_expression'; expression: SourceExpressionIR; span: SourceSpanIR }
   | { kind: 'array_literal'; elements: readonly SourceExpressionIR[]; span: SourceSpanIR }
   | {
     kind: 'object_literal';
     properties: readonly SourceObjectLiteralPropertyIR[];
     span: SourceSpanIR;
   }
-  | { kind: 'unknown_expression'; syntaxKind: string; text: string; span: SourceSpanIR };
+  | { kind: 'unknown_expression'; syntaxKind: string; text: string; span: SourceSpanIR }
+  | { kind: 'in_expression'; left: SourceExpressionIR; right: SourceExpressionIR; span: SourceSpanIR };
 
 export interface SourceObjectLiteralPropertyIR {
   name: string;
@@ -743,6 +745,15 @@ function lowerExpression(
   }
 
   if (ts.isYieldExpression(expression)) {
+    if (expression.asteriskToken) {
+      return {
+        kind: 'yield_star_expression',
+        expression: expression.expression
+          ? lowerExpression(sourceFile, expression.expression)
+          : lowerExpression(sourceFile, ts.factory.createArrayLiteralExpression([]) as ts.Expression),
+        span: spanOf(sourceFile, expression),
+      };
+    }
     return {
       kind: 'yield_expression',
       expression: expression.expression

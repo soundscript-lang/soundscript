@@ -677,7 +677,9 @@ function isWasmGcPublicUnionArmSupported(
     (boundary.kind === 'set' && isWasmGcPublicBoundarySupported(boundary, plan)) ||
     (boundary.kind === 'object' &&
       valueBoundarySupportsWasmGcSpecializedObjectWrapper(boundary) &&
-      wasmGcPlanHasSpecializedObjectBoundary(plan, boundary));
+      wasmGcPlanHasSpecializedObjectBoundary(plan, boundary)) ||
+    boundary.kind === 'closure' ||
+    boundary.kind === 'host_handle';
 }
 
 function areWasmGcPublicBoundariesSupported(
