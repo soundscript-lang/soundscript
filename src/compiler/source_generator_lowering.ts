@@ -185,24 +185,41 @@ function expandYieldStarToSegments(
   startPc: number,
   currentStatements: readonly SourceStatementIR[],
 ): readonly SourceGeneratorSegment[] | undefined {
-  if (expression.kind !== 'array_literal') return undefined;
-  const elements = expression.elements;
-  if (elements.length === 0) return [
-    { pc: startPc, statements: currentStatements, terminal: { kind: 'implicit' } },
-  ];
-  const segments: SourceGeneratorSegment[] = [];
-  for (let i = 0; i < elements.length; i++) {
-    segments.push({
-      pc: startPc + i,
-      statements: i === 0 ? currentStatements : [],
-      terminal: {
-        kind: 'yield',
-        expression: elements[i],
-        nextPc: startPc + i + 1,
-      },
-    });
+  if (expression.kind === 'array_literal') {
+    const elements = expression.elements;
+    if (elements.length === 0) return [
+      { pc: startPc, statements: currentStatements, terminal: { kind: 'implicit' } },
+    ];
+    const segments: SourceGeneratorSegment[] = [];
+    for (let i = 0; i < elements.length; i++) {
+      segments.push({
+        pc: startPc + i,
+        statements: i === 0 ? currentStatements : [],
+        terminal: {
+          kind: 'yield',
+          expression: elements[i],
+          nextPc: startPc + i + 1,
+        },
+      });
+    }
+    return segments;
   }
-  return segments;
+  if (expression.kind === 'call_expression' &&
+    expression.callee.kind === 'property_access' &&
+    (expression.callee.property === 'values' || expression.callee.property === 'keys') &&
+    expression.callee.object.kind === 'identifier') {
+    const identifierName = expression.callee.object.name;
+    return [{
+      pc: startPc,
+      statements: currentStatements,
+      terminal: {
+        kind: 'yield_star',
+        expression,
+        nextPc: startPc + 1,
+      },
+    }];
+  }
+  return undefined;
 }
 
 function isYieldExpressionStatement(statement: SourceStatementIR): boolean {

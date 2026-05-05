@@ -552,6 +552,18 @@ export type SemanticStatementIR =
     resultElementType?: CompilerValueType;
   }
   | {
+    kind: 'map_entries';
+    targetName: string;
+    objectName: string;
+    resultType:
+      | 'owned_array_ref'
+      | 'owned_heap_array_ref'
+      | 'owned_number_array_ref'
+      | 'owned_boolean_array_ref'
+      | 'owned_tagged_array_ref';
+    resultElementType?: CompilerValueType;
+  }
+  | {
     kind: 'map_has';
     targetName: string;
     objectName: string;
@@ -602,6 +614,17 @@ export type SemanticStatementIR =
   }
   | {
     kind: 'set_values';
+    targetName: string;
+    objectName: string;
+    valuesArrayType:
+      | 'owned_array_ref'
+      | 'owned_heap_array_ref'
+      | 'owned_number_array_ref'
+      | 'owned_boolean_array_ref'
+      | 'owned_tagged_array_ref';
+  }
+  | {
+    kind: 'set_entries';
     targetName: string;
     objectName: string;
     valuesArrayType:
@@ -3317,12 +3340,14 @@ function collectUnsupportedStatementKinds(
     case 'map_get':
     case 'map_keys':
     case 'map_values':
+    case 'map_entries':
     case 'map_has':
     case 'map_delete':
     case 'map_clear':
     case 'set_new':
     case 'set_size':
     case 'set_values':
+    case 'set_entries':
     case 'set_add':
     case 'set_has':
     case 'set_delete':

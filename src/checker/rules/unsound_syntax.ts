@@ -2065,6 +2065,10 @@ function getUnsupportedFeatureDiagnostic(
     );
   }
 
+  if (ts.isAutoAccessorPropertyDeclaration?.(node)) {
+    return unsupportedFeature(node.name, 'autoAccessor');
+  }
+
   if (ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
     return unsupportedFeature(node.name, 'accessors');
   }

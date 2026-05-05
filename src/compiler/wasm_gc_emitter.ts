@@ -3531,6 +3531,7 @@ function collectNumberArrayScratchFromStatement(
     case 'map_get':
     case 'map_keys':
     case 'map_values':
+    case 'map_entries':
     case 'map_has':
     case 'map_delete':
     case 'map_clear':
@@ -3542,6 +3543,7 @@ function collectNumberArrayScratchFromStatement(
       addSetArrayScratchUse(statement.valuesArrayType, uses, false);
       break;
     case 'set_values':
+    case 'set_entries':
     case 'set_clear':
       break;
     case 'set_add':
@@ -5353,6 +5355,7 @@ function renderStatement(
     case 'map_keys':
       return renderMapKeysStatement(statement, indent);
     case 'map_values':
+    case 'map_entries':
       return renderMapValuesStatement(statement, indent);
     case 'map_has':
       return renderMapHasStatement(statement, indent);
@@ -5365,6 +5368,7 @@ function renderStatement(
     case 'set_size':
       return renderSetSizeStatement(statement, indent);
     case 'set_values':
+    case 'set_entries':
       return renderSetValuesStatement(statement, indent);
     case 'set_add':
       return renderSetAddStatement(statement, indent, context);
@@ -7179,12 +7183,14 @@ function collectBoxedClosureDispatchSignatureIdsFromStatement(
     case 'map_get':
     case 'map_keys':
     case 'map_values':
+    case 'map_entries':
     case 'map_has':
     case 'map_delete':
     case 'map_clear':
     case 'set_new':
     case 'set_size':
     case 'set_values':
+    case 'set_entries':
     case 'set_add':
     case 'set_has':
     case 'set_delete':
@@ -7641,12 +7647,14 @@ function collectBoxValueTypesFromStatement(
     case 'map_get':
     case 'map_keys':
     case 'map_values':
+    case 'map_entries':
     case 'map_has':
     case 'map_delete':
     case 'map_clear':
     case 'set_new':
     case 'set_size':
     case 'set_values':
+    case 'set_entries':
     case 'set_add':
     case 'set_has':
     case 'set_delete':
@@ -8013,6 +8021,7 @@ function collectArrayRuntimeTypesFromStatement(
       runtimeTypes.add('tagged');
       break;
     case 'map_values':
+    case 'map_entries':
       runtimeTypes.add('string');
       runtimeTypes.add('tagged');
       addArrayRuntimeForValueType(statement.resultType, runtimeTypes);
@@ -8023,6 +8032,7 @@ function collectArrayRuntimeTypesFromStatement(
     case 'set_new':
     case 'set_size':
     case 'set_values':
+    case 'set_entries':
     case 'set_add':
     case 'set_has':
     case 'set_delete':

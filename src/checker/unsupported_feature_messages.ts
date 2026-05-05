@@ -9,6 +9,7 @@ export interface UnsupportedFeatureDiagnosticText {
 
 export type UnsupportedFeatureKind =
   | 'accessors'
+  | 'autoAccessor'
   | 'ambientAugmentation'
   | 'ambientEnum'
   | 'argumentsCallee'

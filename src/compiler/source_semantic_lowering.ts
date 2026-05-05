@@ -4696,10 +4696,10 @@ function lowerMapMethodCallExpression(
     return localGetExpression(targetName, 'owned_tagged_array_ref');
   }
   if (methodName === 'entries' && args.length === 0) {
-    const targetName = nextTempLocalName(context, `map_values_${objectName}`);
+    const targetName = nextTempLocalName(context, `map_entries_${objectName}`);
     addLocal(context, targetName, 'owned_tagged_array_ref');
     context.pendingStatements.push({
-      kind: 'map_values',
+      kind: 'map_entries',
       targetName, objectName,
       resultType: 'owned_tagged_array_ref',
       resultElementType: mapLocal.valueRepresentation,
@@ -4795,10 +4795,10 @@ function lowerSetMethodCallExpression(
     return localGetExpression(targetName, setLocal.valuesArrayType);
   }
   if (methodName === 'entries' && args.length === 0) {
-    const targetName = nextTempLocalName(context, `set_values_${objectName}`);
+    const targetName = nextTempLocalName(context, `set_entries_${objectName}`);
     addLocal(context, targetName, setLocal.valuesArrayType);
     context.pendingStatements.push({
-      kind: 'set_values',
+      kind: 'set_entries',
       targetName, objectName,
       valuesArrayType: setLocal.valuesArrayType,
     });
