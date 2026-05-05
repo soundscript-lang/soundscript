@@ -4696,8 +4696,18 @@ function lowerMapMethodCallExpression(
     return localGetExpression(targetName, 'owned_tagged_array_ref');
   }
   if (methodName === 'entries' && args.length === 0) {
-    context.unsupportedKinds.add('map_entries_not_supported');
-    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    const targetName = nextTempLocalName(context, `map_values_${objectName}`);
+    addLocal(context, targetName, 'owned_tagged_array_ref');
+    context.pendingStatements.push({
+      kind: 'map_values',
+      targetName, objectName,
+      resultType: 'owned_tagged_array_ref',
+      resultElementType: mapLocal.valueRepresentation,
+    });
+    context.runtimeFamilies.add('map');
+    context.runtimeFamilies.add('finite_union');
+    context.runtimeFamilies.add('array');
+    return localGetExpression(targetName, 'owned_tagged_array_ref');
   }
   return undefined;
 }
@@ -4785,8 +4795,16 @@ function lowerSetMethodCallExpression(
     return localGetExpression(targetName, setLocal.valuesArrayType);
   }
   if (methodName === 'entries' && args.length === 0) {
-    context.unsupportedKinds.add('set_entries_not_supported');
-    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    const targetName = nextTempLocalName(context, `set_values_${objectName}`);
+    addLocal(context, targetName, setLocal.valuesArrayType);
+    context.pendingStatements.push({
+      kind: 'set_values',
+      targetName, objectName,
+      valuesArrayType: setLocal.valuesArrayType,
+    });
+    context.runtimeFamilies.add('set');
+    context.runtimeFamilies.add('array');
+    return localGetExpression(targetName, setLocal.valuesArrayType);
   }
   return undefined;
 }
