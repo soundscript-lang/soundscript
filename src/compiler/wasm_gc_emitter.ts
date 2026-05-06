@@ -2351,6 +2351,61 @@ function renderMapTaggedValueForResultType(
   }
 }
 
+function renderMapEntriesStatement(
+  statement: Extract<SemanticStatementIR, { kind: 'map_entries' }>,
+  indent: string,
+): readonly string[] {
+  return [
+    ...renderMapStorageLoad(statement.objectName, indent),
+    `${indent}local.get $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    `${indent}array.new_default $tagged_array_runtime`,
+    `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+    `${indent}i32.const 0`,
+    `${indent}local.set $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+    `${indent}block`,
+    `${indent}  loop`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    `${indent}    i32.ge_u`,
+    `${indent}    br_if 1`,
+    `${indent}    i32.const 2`,
+    `${indent}    array.new_default $tagged_array_runtime`,
+    `${indent}    local.tee $${sanitizeIdentifier(MAP_ENTRY_SCRATCH)}`,
+    `${indent}    i32.const 0`,
+    `${indent}    i32.const ${TAGGED_STRING_TAG}`,
+    `${indent}    f64.const 0`,
+    `${indent}    ref.null extern`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_KEYS_SCRATCH)}`,
+    `${indent}    ref.as_non_null`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+    `${indent}    array.get $string_array_runtime`,
+    `${indent}    struct.new ${taggedValueTypeName()}`,
+    `${indent}    array.set $tagged_array_runtime`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_ENTRY_SCRATCH)}`,
+    `${indent}    i32.const 1`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_VALUES_SCRATCH)}`,
+    `${indent}    ref.as_non_null`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+    `${indent}    array.get $tagged_array_runtime`,
+    `${indent}    array.set $tagged_array_runtime`,
+    `${indent}    local.get $${sanitizeIdentifier(statement.targetName)}`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+    `${indent}    i32.const ${TAGGED_TAGGED_ARRAY_TAG}`,
+    `${indent}    f64.const 0`,
+    `${indent}    ref.null extern`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_ENTRY_SCRATCH)}`,
+    `${indent}    struct.new ${taggedValueTypeName()}`,
+    `${indent}    array.set $tagged_array_runtime`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+    `${indent}    i32.const 1`,
+    `${indent}    i32.add`,
+    `${indent}    local.set $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+    `${indent}    br 0`,
+    `${indent}  end`,
+    `${indent}end`,
+  ];
+}
+
 function renderMapValuesStatement(
   statement: Extract<SemanticStatementIR, { kind: 'map_values' }>,
   indent: string,
@@ -3239,6 +3294,8 @@ const MAP_VALUES_TMP_SCRATCH = '__soundscript_map_values_tmp';
 const MAP_INDEX_SCRATCH = '__soundscript_map_index';
 const MAP_LENGTH_SCRATCH = '__soundscript_map_length';
 const MAP_FOUND_SCRATCH = '__soundscript_map_found';
+const MAP_ENTRY_SCRATCH = '__soundscript_map_entry';
+const TAGGED_TAGGED_ARRAY_TAG = 5;
 const STRING_EQUAL_IMPORT_MODULE = 'soundscript';
 const STRING_EQUAL_IMPORT_NAME = '__string_eq';
 const STRING_EQUAL_FUNCTION_NAME = '__soundscript_string_eq';
@@ -5357,7 +5414,7 @@ function renderStatement(
     case 'map_values':
       return renderMapValuesStatement(statement, indent);
     case 'map_entries':
-      return renderMapValuesStatement(statement as any, indent);
+      return renderMapEntriesStatement(statement as any, indent);
     case 'map_values':
       return renderMapValuesStatement(statement as any, indent);
     case 'map_has':
