@@ -5355,8 +5355,11 @@ function renderStatement(
     case 'map_keys':
       return renderMapKeysStatement(statement, indent);
     case 'map_values':
-    case 'map_entries':
       return renderMapValuesStatement(statement, indent);
+    case 'map_entries':
+      return renderMapValuesStatement(statement as any, indent);
+    case 'map_values':
+      return renderMapValuesStatement(statement as any, indent);
     case 'map_has':
       return renderMapHasStatement(statement, indent);
     case 'map_delete':
@@ -5367,9 +5370,8 @@ function renderStatement(
       return renderSetNewStatement(statement, indent);
     case 'set_size':
       return renderSetSizeStatement(statement, indent);
-    case 'set_values':
     case 'set_entries':
-      return renderSetValuesStatement(statement, indent);
+      return renderSetValuesStatement(statement as any, indent);
     case 'set_add':
       return renderSetAddStatement(statement, indent, context);
     case 'set_has':
