@@ -3565,7 +3565,10 @@ function lowerForOfStatement(
   statement: Extract<SourceStatementIR, { kind: 'for_of' }>,
   context: FunctionLoweringContext,
 ): readonly SemanticStatementIR[] | undefined {
-  if (statement.await || statement.left.kind !== 'identifier_binding') {
+  if (statement.await) {
+    return lowerForAwaitOfStatement(statement, context);
+  }
+  if (statement.left.kind !== 'identifier_binding') {
     return undefined;
   }
   const iterableExpr = statement.right;
@@ -3795,6 +3798,14 @@ function arrayElementExpressionForFlatRead(
     default:
       return undefined;
   }
+}
+
+function lowerForAwaitOfStatement(
+  statement: Extract<SourceStatementIR, { kind: 'for_of' }>,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] {
+  context.unsupportedKinds.add('for_await_of_not_supported');
+  return [{ kind: 'unsupported_statement', sourceKind: 'for_await_of' }];
 }
 
 function lowerArrayForOfStatement(
