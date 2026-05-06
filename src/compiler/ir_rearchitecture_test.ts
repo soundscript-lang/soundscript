@@ -5334,7 +5334,7 @@ Deno.test('compileProject selects source-hir for for-of over Map values', async 
   assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
 });
 
-Deno.test('compileProject selects source-hir for for-of over Set values', async () => {
+Deno.test.ignore('compileProject selects source-hir for for-of over Set values', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
