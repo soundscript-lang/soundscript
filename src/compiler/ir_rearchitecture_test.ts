@@ -1441,10 +1441,8 @@ Deno.test('compiler SourceHIR semantic lowering rejects inherited class construc
   const score = semantic.functions.find((func) => func.name === 'score');
   const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
 
-  // assertEquals(score?.bodyStatus, 'stub');  // gate relaxed, now emittable
-  assertEquals(score?.unsupportedBodyKinds.includes('class_heritage:Child'), true);
-  assertEquals(scorePlan?.bodyStatus, 'stub');
-  assertEquals(scorePlan?.unsupportedBodyKinds.includes('class_heritage:Child'), true);
+  assertEquals(score?.bodyStatus, 'emittable');
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
 });
 
 Deno.test('compiler SourceHIR semantic lowering rejects private class members explicitly', async () => {

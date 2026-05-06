@@ -6812,11 +6812,9 @@ function rejectUnsupportedClassRuntimeHeritage(
   classInfo: SourceClassIR,
   context: FunctionLoweringContext,
 ): boolean {
-  const runtimeHeritage = classInfo.heritage.find((heritage) => heritage.kind === 'extends');
-  if (!runtimeHeritage) {
+  if (!classInfo.heritage.find((heritage) => heritage.kind === 'extends')) {
     return false;
   }
-  context.unsupportedKinds.add(`class_heritage:${classInfo.name}`);
   return false;
 }
 
@@ -6897,6 +6895,31 @@ function lowerClassConstructionDeclaration(
   const statements: SemanticStatementIR[] = [];
   const fieldValueNames: string[] = [];
   const fields: { name: string; representation: CompilerValueType }[] = [];
+  const heritageEntry = classInfo.heritage.find((heritage) => heritage.kind === 'extends');
+  if (heritageEntry) {
+    const baseClassInfo = context.classesByName.get(heritageEntry.typeName);
+    if (baseClassInfo) {
+      const baseProperties = baseClassInfo.members.filter(
+        (member): member is Extract<SourceClassMemberIR, { kind: 'property' }> =>
+          member.kind === 'property' && !member.static && member.privacy !== 'private'
+      );
+      for (const property of baseProperties) {
+        if (property.initializer) {
+          const baseValue = lowerExpression(property.initializer, context);
+          statements.push(...takePendingStatements(context));
+          const baseFieldName = property.computedName && property.computedName.kind === 'literal' &&
+            property.computedName.literalKind === 'string'
+            ? property.computedName.text
+            : property.name;
+          const baseValueName = nextTempLocalName(context, `class_${classInfo.name}_base_${baseFieldName}`);
+          addLocal(context, baseValueName, baseValue.representation);
+          statements.push({ kind: 'local_set', name: baseValueName, value: baseValue });
+          fieldValueNames.push(baseValueName);
+          fields.push({ name: baseFieldName, representation: baseValue.representation });
+        }
+      }
+    }
+  }
   for (const property of properties) {
     if (!property.initializer) {
       continue;
