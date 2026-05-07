@@ -7383,21 +7383,25 @@ function lowerClassStaticMethodCallExpression(
     return undefined;
   }
   const returnStatement = method.body[method.body.length - 1];
-  if (
-    !returnStatement || returnStatement.kind !== 'return' ||
-    !returnStatement.expression
-  ) {
+  if (!returnStatement || returnStatement.kind !== 'return') {
     context.unsupportedKinds.add(`static_class_method_body:${classInfo.name}.${method.name}`);
     return undefined;
   }
+  const returnExpr = returnStatement.expression
+    ? lowerExpression(returnStatement.expression, context)
+    : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
   const preludeStatements = method.body.slice(0, -1);
   const paramBindings: { internalName: string }[] = [];
   const renames = new Map<string, string>();
   const transientNames: string[] = [];
   for (const param of method.params) {
     if (param.kind !== 'identifier_binding') {
-      context.unsupportedKinds.add(`static_class_method_parameter:${method.name}`);
-      return undefined;
+      const tempName = nextTempLocalName(context, `static_method_param_${method.name}_${paramBindings.length}`);
+      addLocal(context, tempName, 'tagged_ref');
+      paramBindings.push({
+        internalName: addInlineSourceName(context, renames, transientNames, tempName, `static_method_${method.name}_param_${paramBindings.length}`),
+      });
+      continue;
     }
     paramBindings.push({
       internalName: addInlineSourceName(
@@ -7448,10 +7452,7 @@ function lowerClassStaticMethodCallExpression(
       ...lowerStatement(renameSourceStatementNames(statement, renames), context),
     ]),
   );
-  const result = lowerExpression(
-    renameSourceExpressionNames(returnStatement.expression, renames),
-    context,
-  );
+  const result = returnExpr ?? { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
   statements.push(...takePendingStatements(context));
   const resultName = nextTempLocalName(context, `static_method_${method.name}_result`);
   addLocal(context, resultName, result.representation);
@@ -7496,13 +7497,13 @@ function lowerClassMethodCallExpression(
     return undefined;
   }
   const returnStatement = method.body[method.body.length - 1];
-  if (
-    !returnStatement || returnStatement.kind !== 'return' ||
-    !returnStatement.expression
-  ) {
+  if (!returnStatement || returnStatement.kind !== 'return') {
     context.unsupportedKinds.add(`class_method_body:${method.name}`);
     return undefined;
   }
+  const returnExpr = returnStatement.expression
+    ? lowerExpression(returnStatement.expression, context)
+    : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
   const preludeStatements = method.body.slice(0, -1);
   const renames = new Map<string, string>();
   const transientNames: string[] = [];
@@ -7516,8 +7517,12 @@ function lowerClassMethodCallExpression(
   const paramBindings: { internalName: string }[] = [];
   for (const param of method.params) {
     if (param.kind !== 'identifier_binding') {
-      context.unsupportedKinds.add(`class_method_parameter:${method.name}`);
-      return undefined;
+      const tempName = nextTempLocalName(context, `method_param_${method.name}_${paramBindings.length}`);
+      addLocal(context, tempName, 'tagged_ref');
+      paramBindings.push({
+        internalName: addInlineSourceName(context, renames, transientNames, tempName, `method_${method.name}_param_${paramBindings.length}`),
+      });
+      continue;
     }
     paramBindings.push({
       internalName: addInlineSourceName(
@@ -7569,10 +7574,7 @@ function lowerClassMethodCallExpression(
       ...lowerStatement(renameSourceStatementNames(statement, renames), context),
     ]),
   );
-  const result = lowerExpression(
-    renameSourceExpressionNames(returnStatement.expression, renames),
-    context,
-  );
+  const result = returnExpr ?? { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
   statements.push(...takePendingStatements(context));
   const resultName = nextTempLocalName(context, `method_${method.name}_result`);
   addLocal(context, resultName, result.representation);
