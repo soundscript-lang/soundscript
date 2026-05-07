@@ -781,8 +781,7 @@ export function compileProject(options: CompileProjectOptions): CompileProjectRe
     try {
       validateHonestHeapBoundarySurfaces(program);
       const snapshot = createCompilerIrDebugSnapshot(program, dirname(options.projectPath));
-      const canUseSourceWasmGcPublicPath = snapshot.legacyJsHostImports.length === 0 &&
-        canUseWasmGcPublicPlan(
+      const canUseSourceWasmGcPublicPath = canUseWasmGcPublicPlan(
           runtime.target,
           snapshot.sourceSemantic,
           snapshot.sourceWasmGcPlan,
