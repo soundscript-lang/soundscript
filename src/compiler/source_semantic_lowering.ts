@@ -3611,7 +3611,30 @@ function lowerForOfStatement(
     return lowerForAwaitOfStatement(statement, context);
   }
   if (statement.left.kind !== 'identifier_binding') {
-    return undefined;
+    const tempName = nextTempLocalName(context, 'for_of_destructure');
+    addLocal(context, tempName, 'tagged_ref');
+    const rewrittenStatement: Extract<SourceStatementIR, { kind: 'for_of' }> = {
+      ...statement,
+      left: { kind: 'identifier_binding', name: tempName } as Extract<SourceStatementIR, { kind: 'for_of' }>['left'],
+    } as Extract<SourceStatementIR, { kind: 'for_of' }>;
+    const result = lowerForOfStatement(rewrittenStatement, context);
+    if (!result) return undefined;
+    const destructureStmts = lowerDestructuredBindingStatements(
+      statement.left,
+      tempName,
+      'tagged_ref',
+      context,
+    );
+    const forStmts = result as SemanticStatementIR[];
+    if (forStmts.length > 0 && forStmts[forStmts.length - 1].kind === 'while') {
+      const whileStmt = forStmts[forStmts.length - 1] as Extract<SemanticStatementIR, { kind: 'while' }>;
+      forStmts[forStmts.length - 1] = {
+        kind: 'while',
+        condition: whileStmt.condition,
+        body: [...destructureStmts, ...whileStmt.body],
+      };
+    }
+    return forStmts;
   }
   const iterableExpr = statement.right;
   if (iterableExpr.kind === 'call_expression' &&
@@ -3716,6 +3739,47 @@ function elementTypeToArrayType(elementType: CompilerValueType): CompilerValueTy
   if (elementType === 'owned_string_ref') return 'owned_array_ref';
   if (elementType === 'heap_ref') return 'owned_heap_array_ref';
   return 'owned_tagged_array_ref';
+}
+
+function lowerDestructuredBindingStatements(
+  binding: SourceBindingIR,
+  sourceName: string,
+  sourceRepresentation: CompilerValueType,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] {
+  if (binding.kind === 'array_binding') {
+    const stmts: SemanticStatementIR[] = [];
+    for (let i = 0; i < binding.elements.length; i++) {
+      const element = binding.elements[i];
+      if ('binding' in element && element.binding?.kind === 'identifier_binding') {
+        addLocal(context, element.binding.name, 'tagged_ref');
+        stmts.push({
+          kind: 'local_set',
+          name: element.binding.name,
+          value: {
+            kind: 'owned_tagged_array_element',
+            value: { kind: 'local_get', name: sourceName, representation: sourceRepresentation },
+            index: { kind: 'number_literal', value: i, representation: 'f64' },
+            representation: 'tagged_ref',
+          },
+        });
+      } else if ('kind' in element && element.kind === 'identifier_binding') {
+        addLocal(context, element.name, 'tagged_ref');
+        stmts.push({
+          kind: 'local_set',
+          name: element.name,
+          value: {
+            kind: 'owned_tagged_array_element',
+            value: { kind: 'local_get', name: sourceName, representation: sourceRepresentation },
+            index: { kind: 'number_literal', value: i, representation: 'f64' },
+            representation: 'tagged_ref',
+          },
+        });
+      }
+    }
+    return stmts;
+  }
+  return [{ kind: 'unsupported_statement', sourceKind: 'destructure_binding' }];
 }
 
 function lowerArrayForOfStatementFromArray(
