@@ -14,9 +14,11 @@ export type UnsupportedFeatureKind =
   | 'ambientEnum'
   | 'argumentsCallee'
   | 'argumentsObject'
+  | 'arithmeticOperator'
   | 'arrayLengthConstructor'
   | 'bannedConstructor'
   | 'bannedDeclarationFileTypeReference'
+  | 'bitwiseOperator'
   | 'broadObjectEnumeration'
   | 'classInterfaceMerge'
   | 'commaOperator'
@@ -110,6 +112,15 @@ export function describeUnsupportedFeature(
           replacementFamily: 'explicit_methods_or_fields',
         },
       );
+    case 'autoAccessor':
+      return createUnsupportedFeature(
+        kind,
+        'Auto-accessors are not supported in soundscript.',
+        {
+          hint: 'Use ordinary fields or explicit methods instead.',
+          replacementFamily: 'explicit_methods_or_fields',
+        },
+      );
     case 'ambientAugmentation':
       return createUnsupportedFeature(
         kind,
@@ -151,6 +162,17 @@ export function describeUnsupportedFeature(
           'Function inputs must be explicit in the signature instead of reflected through an array-like object.',
         replacementFamily: 'rest_parameters',
       });
+    case 'arithmeticOperator':
+      return createUnsupportedFeature(
+        kind,
+        'Arithmetic operators (`*`, `/`, `-`, `%`) in soundscript require both operands to be `number` (or both `bigint`).',
+        {
+          hint: 'Convert both operands to the same numeric type before using the operator.',
+          invariant:
+            'Arithmetic operators must stay inside one numeric family to avoid implicit `ToNumber` coercion.',
+          replacementFamily: 'explicit_numeric_conversion',
+        },
+      );
     case 'arrayLengthConstructor':
       return createUnsupportedFeature(
         kind,
@@ -184,6 +206,17 @@ export function describeUnsupportedFeature(
         replacementFamily: 'modeled_type_surface',
       });
     }
+    case 'bitwiseOperator':
+      return createUnsupportedFeature(
+        kind,
+        'Bitwise operators implicitly coerce to 32-bit integers and are not part of the stable SoundScript subset.',
+        {
+          hint: 'Use explicit `Math.floor`, `Math.trunc`, or equivalent operations instead.',
+          invariant:
+            'Bitwise operators perform lossy `ToInt32` / `ToUint32` coercion rather than ordinary numeric arithmetic.',
+          replacementFamily: 'explicit_numeric_operation',
+        },
+      );
     case 'broadObjectEnumeration':
       return createUnsupportedFeature(
         kind,
@@ -533,5 +566,8 @@ export function describeUnsupportedFeature(
         replacementFamily: 'explicit_local_bindings',
         fixability: 'api_redesign',
       });
+    default:
+      kind satisfies never;
+      return createUnsupportedFeature(kind, `The feature "${kind}" is not supported in soundscript.`);
   }
 }

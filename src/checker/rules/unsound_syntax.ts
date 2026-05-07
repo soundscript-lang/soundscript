@@ -86,6 +86,32 @@ const PRIMITIVE_CONVERSION_HOOK_MEMBER_NAMES = new Set([
   'valueOf',
 ]);
 
+const BITWISE_OPERATOR_TOKENS = new Set([
+  ts.SyntaxKind.AmpersandToken,
+  ts.SyntaxKind.AmpersandEqualsToken,
+  ts.SyntaxKind.BarToken,
+  ts.SyntaxKind.BarEqualsToken,
+  ts.SyntaxKind.CaretToken,
+  ts.SyntaxKind.CaretEqualsToken,
+  ts.SyntaxKind.LessThanLessThanToken,
+  ts.SyntaxKind.LessThanLessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanToken,
+  ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken,
+  ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
+]);
+
+const ARITHMETIC_OPERATOR_TOKENS = new Set([
+  ts.SyntaxKind.AsteriskToken,
+  ts.SyntaxKind.AsteriskEqualsToken,
+  ts.SyntaxKind.MinusToken,
+  ts.SyntaxKind.MinusEqualsToken,
+  ts.SyntaxKind.PercentToken,
+  ts.SyntaxKind.PercentEqualsToken,
+  ts.SyntaxKind.SlashToken,
+  ts.SyntaxKind.SlashEqualsToken,
+]);
+
 function isAnyType(type: ts.Type): boolean {
   return (type.flags & ts.TypeFlags.Any) !== 0;
 }
@@ -744,6 +770,18 @@ function isAllowedRelationalOperandPair(
   return (
     isDefinitelyStringType(checker, left) && isDefinitelyStringType(checker, right)
   ) || (
+    isDefinitelyNumberType(checker, left) && isDefinitelyNumberType(checker, right)
+  ) || (
+    isDefinitelyBigIntType(checker, left) && isDefinitelyBigIntType(checker, right)
+  );
+}
+
+function isAllowedArithmeticOperandPair(
+  checker: ts.TypeChecker,
+  left: ts.Type,
+  right: ts.Type,
+): boolean {
+  return (
     isDefinitelyNumberType(checker, left) && isDefinitelyNumberType(checker, right)
   ) || (
     isDefinitelyBigIntType(checker, left) && isDefinitelyBigIntType(checker, right)
@@ -1853,6 +1891,10 @@ function getUnsupportedFeatureDiagnostic(
     return unsupportedFeature(node, 'withStatement');
   }
 
+  if (ts.isForInStatement(node)) {
+    return unsupportedFeature(node, 'forIn');
+  }
+
   if (
     (ts.isIfStatement(node) ||
       ts.isWhileStatement(node) ||
@@ -1931,6 +1973,13 @@ function getUnsupportedFeatureDiagnostic(
   }
 
   if (
+    ts.isPrefixUnaryExpression(node) &&
+    node.operator === ts.SyntaxKind.TildeToken
+  ) {
+    return unsupportedFeature(node, 'bitwiseOperator');
+  }
+
+  if (
     ts.isBinaryExpression(node) &&
     (node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
       node.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken)
@@ -1986,8 +2035,27 @@ function getUnsupportedFeatureDiagnostic(
     return unsupportedFeature(node.operatorToken, 'plusOperator');
   }
 
+  if (
+    ts.isBinaryExpression(node) &&
+    ARITHMETIC_OPERATOR_TOKENS.has(node.operatorToken.kind) &&
+    !isAllowedArithmeticOperandPair(
+      context.checker,
+      context.checker.getTypeAtLocation(node.left),
+      context.checker.getTypeAtLocation(node.right),
+    )
+  ) {
+    return unsupportedFeature(node.operatorToken, 'arithmeticOperator');
+  }
+
   if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.CommaToken) {
     return unsupportedFeature(node.operatorToken, 'commaOperator');
+  }
+
+  if (
+    ts.isBinaryExpression(node) &&
+    BITWISE_OPERATOR_TOKENS.has(node.operatorToken.kind)
+  ) {
+    return unsupportedFeature(node.operatorToken, 'bitwiseOperator');
   }
 
   if (ts.isVoidExpression(node) && isVoidZeroExpression(node)) {
