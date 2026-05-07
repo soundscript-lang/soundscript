@@ -5517,6 +5517,27 @@ function lowerTryCatchStatement(
   const tryLeadingStatements = tryReturnIndex >= 0
     ? statement.tryBlock.slice(0, tryReturnIndex)
     : statement.tryBlock;
+  const supportsTryTerminalReturn = tryReturnStatement !== undefined &&
+    statement.tryBlock.length === tryReturnIndex + 1 &&
+    !sourceStatementsContainControlTransfer(tryLeadingStatements);
+  const supportsTryCapturedReturn = tryReturnStatement !== undefined &&
+    !supportsTryTerminalReturn &&
+    !sourceStatementsContainControlTransfer(
+      tryReturnIndex >= 0 ? statement.tryBlock.slice(0, tryReturnIndex) : statement.tryBlock
+    ) &&
+    !statement.tryBlock.slice(tryReturnIndex + 1).some((child) =>
+      child.kind === 'return' || child.kind === 'break' || child.kind === 'continue'
+    );
+  const supportsCatchTerminalReturn = catchReturnStatement !== undefined &&
+    catchBlock.length === catchReturnIndex + 1 &&
+    !sourceStatementsContainControlTransfer(catchLeadingStatements);
+  if (
+    (tryReturnStatement && !supportsTryTerminalReturn && !supportsTryCapturedReturn) ||
+    (catchReturnStatement && !supportsCatchTerminalReturn)
+  ) {
+    context.unsupportedKinds.add('try_catch_control_flow');
+    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+  }
   const tryLoopControlIndex = statement.tryBlock.findIndex((child) =>
     child.kind === 'break' || child.kind === 'continue'
   );
@@ -5529,20 +5550,8 @@ function lowerTryCatchStatement(
   const tryLoopControlLeadingStatements = tryLoopControlIndex >= 0
     ? statement.tryBlock.slice(0, tryLoopControlIndex)
     : statement.tryBlock;
-  const supportsTryTerminalReturn = tryReturnStatement !== undefined &&
-    statement.tryBlock.length === tryReturnIndex + 1 &&
-    !sourceStatementsContainControlTransfer(tryLeadingStatements);
-  const supportsCatchTerminalReturn = catchReturnStatement !== undefined &&
-    catchBlock.length === catchReturnIndex + 1 &&
-    !sourceStatementsContainControlTransfer(catchLeadingStatements);
-  if (
-    (tryReturnStatement && !supportsTryTerminalReturn) ||
-    (catchReturnStatement && !supportsCatchTerminalReturn)
-  ) {
-    context.unsupportedKinds.add('try_catch_control_flow');
-    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
-  }
-  const supportsTryReturnThroughFinally = finallyBlock.length > 0 && supportsTryTerminalReturn;
+  const supportsTryReturnThroughFinally = finallyBlock.length > 0 &&
+    (supportsTryTerminalReturn || supportsTryCapturedReturn);
   const supportsCatchReturnThroughFinally = finallyBlock.length > 0 &&
     supportsCatchTerminalReturn;
   const supportsTryTerminalLoopControl = tryLoopControlStatement !== undefined &&
