@@ -5491,6 +5491,14 @@ function captureReturnCompletion(
     context,
   ) ?? rawValue;
   if (value.representation !== target.returnRepresentation) {
+    const tagged = taggedUnionExpressionForValue(value, context);
+    if (tagged) {
+      return [
+        ...takePendingStatements(context),
+        { kind: 'local_set', name: target.returnValueName, value: tagged },
+        { kind: 'local_set', name: target.returnFlagName, value: booleanLiteralExpression(true) },
+      ];
+    }
     context.unsupportedKinds.add(`${sourceKind}_return_value`);
     return [{ kind: 'unsupported_statement', sourceKind }];
   }
@@ -5560,6 +5568,18 @@ function dispatchLoopControlCompletionTarget(
     });
   }
   return statements;
+}
+
+function hasTerminalControlFlowOverride(
+  finallyBlock: readonly SourceStatementIR[],
+): boolean {
+  if (finallyBlock.length === 0) return false;
+  const lastIndex = finallyBlock.length - 1;
+  const last = finallyBlock[lastIndex];
+  if (last.kind !== 'return' && last.kind !== 'throw' &&
+    last.kind !== 'break' && last.kind !== 'continue') return false;
+  const leadingStatements = finallyBlock.slice(0, lastIndex);
+  return !sourceStatementsContainControlTransfer(leadingStatements);
 }
 
 function lowerTryCatchStatement(
@@ -5664,8 +5684,10 @@ function lowerTryCatchStatement(
   if (
     finallyBlock.length > 0 &&
     (
-      sourceStatementsContainControlTransfer(finallyBlock) ||
-      (
+      sourceStatementsContainControlTransfer(finallyBlock) &&
+      !hasTerminalControlFlowOverride(finallyBlock)
+    ) ||
+    (
         supportsTryReturnThroughFinally ? false : sourceStatementsContainReturn(statement.tryBlock)
       ) ||
       (
