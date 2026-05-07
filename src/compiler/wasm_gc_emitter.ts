@@ -2911,6 +2911,64 @@ function renderSetValuesStatement(
   ];
 }
 
+function renderSetEntriesStatement(
+  statement: Extract<SemanticStatementIR, { kind: 'set_entries' }>,
+  indent: string,
+): readonly string[] {
+  const runtimeType = setArrayRuntimeType(statement.valuesArrayType);
+  const lenScratch = '__soundscript_set_len';
+  const idxScratch = '__soundscript_set_idx';
+  const entryScratch = '__soundscript_set_entry';
+  return [
+    `${indent}local.get $${sanitizeIdentifier(statement.objectName)}`,
+    `${indent}ref.cast (ref $set_runtime)`,
+    `${indent}struct.get $set_runtime $storage`,
+    `${indent}ref.cast (ref ${runtimeType})`,
+    `${indent}local.tee $${sanitizeIdentifier(lenScratch)}`,
+    `${indent}array.len`,
+    `${indent}array.new_default $tagged_array_runtime`,
+    `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+    `${indent}i32.const 0`,
+    `${indent}local.set $${sanitizeIdentifier(idxScratch)}`,
+    `${indent}block`,
+    `${indent}  loop`,
+    `${indent}    local.get $${sanitizeIdentifier(idxScratch)}`,
+    `${indent}    local.get $${sanitizeIdentifier(lenScratch)}`,
+    `${indent}    array.len`,
+    `${indent}    i32.ge_u`,
+    `${indent}    br_if 1`,
+    `${indent}    i32.const 2`,
+    `${indent}    array.new_default $tagged_array_runtime`,
+    `${indent}    local.tee $${sanitizeIdentifier(entryScratch)}`,
+    `${indent}    i32.const 0`,
+    `${indent}    local.get $${sanitizeIdentifier(lenScratch)}`,
+    `${indent}    local.get $${sanitizeIdentifier(idxScratch)}`,
+    `${indent}    array.get ${runtimeType}`,
+    `${indent}    array.set $tagged_array_runtime`,
+    `${indent}    local.get $${sanitizeIdentifier(entryScratch)}`,
+    `${indent}    i32.const 1`,
+    `${indent}    local.get $${sanitizeIdentifier(lenScratch)}`,
+    `${indent}    local.get $${sanitizeIdentifier(idxScratch)}`,
+    `${indent}    array.get ${runtimeType}`,
+    `${indent}    array.set $tagged_array_runtime`,
+    `${indent}    local.get $${sanitizeIdentifier(statement.targetName)}`,
+    `${indent}    local.get $${sanitizeIdentifier(idxScratch)}`,
+    `${indent}    i32.const ${TAGGED_TAGGED_ARRAY_TAG}`,
+    `${indent}    f64.const 0`,
+    `${indent}    ref.null extern`,
+    `${indent}    local.get $${sanitizeIdentifier(entryScratch)}`,
+    `${indent}    struct.new ${taggedValueTypeName()}`,
+    `${indent}    array.set $tagged_array_runtime`,
+    `${indent}    local.get $${sanitizeIdentifier(idxScratch)}`,
+    `${indent}    i32.const 1`,
+    `${indent}    i32.add`,
+    `${indent}    local.set $${sanitizeIdentifier(idxScratch)}`,
+    `${indent}    br 0`,
+    `${indent}  end`,
+    `${indent}end`,
+  ];
+}
+
 function renderSetAddStatement(
   statement: Extract<SemanticStatementIR, { kind: 'set_add' }>,
   indent: string,
