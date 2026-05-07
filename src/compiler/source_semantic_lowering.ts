@@ -5684,10 +5684,9 @@ function lowerTryCatchStatement(
   if (
     finallyBlock.length > 0 &&
     (
-      sourceStatementsContainControlTransfer(finallyBlock) &&
-      !hasTerminalControlFlowOverride(finallyBlock)
-    ) ||
-    (
+      (sourceStatementsContainControlTransfer(finallyBlock) &&
+        !hasTerminalControlFlowOverride(finallyBlock)) ||
+      (
         supportsTryReturnThroughFinally ? false : sourceStatementsContainReturn(statement.tryBlock)
       ) ||
       (
