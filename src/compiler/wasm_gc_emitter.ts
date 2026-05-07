@@ -3359,6 +3359,7 @@ const STRING_EQUAL_IMPORT_NAME = '__string_eq';
 const STRING_EQUAL_FUNCTION_NAME = '__soundscript_string_eq';
 const STRING_CONCAT_FUNCTION_NAME = '__soundscript_string_concat';
 const STRING_SEARCH_FUNCTION_NAME = '__soundscript_string_search';
+const STRING_SLICE_FUNCTION_NAME = '__soundscript_string_slice';
 const EXTERN_EQUAL_IMPORT_MODULE = 'soundscript';
 const EXTERN_EQUAL_IMPORT_NAME = '__extern_eq';
 const EXTERN_EQUAL_FUNCTION_NAME = '__soundscript_extern_eq';
@@ -3530,6 +3531,7 @@ function collectNumberArrayScratchFromExpression(
     case 'owned_array_length':
     case 'owned_string_length':
     case 'string_search':
+    case 'string_slice':
     case 'tag_number':
     case 'tag_boolean':
     case 'tag_string':
@@ -4780,6 +4782,19 @@ function renderOwnedStringLiteralExpression(
   ];
 }
 
+function renderStringSliceExpression(
+  expression: Extract<SemanticExpressionIR, { kind: 'string_slice' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  return [
+    ...renderExpression(expression.value, indent, context),
+    ...(expression.start ? renderExpression(expression.start, indent, context) : [`${indent}i32.const 0`]),
+    ...(expression.end ? renderExpression(expression.end, indent, context) : [`${indent}i32.const -1`]),
+    `${indent}call $${sanitizeIdentifier(STRING_SLICE_FUNCTION_NAME)}`,
+  ];
+}
+
 function renderStringSearchExpression(
   expression: Extract<SemanticExpressionIR, { kind: 'string_search' }>,
   indent: string,
@@ -4848,6 +4863,8 @@ function renderExpression(
       return renderOwnedStringLengthExpression(expression, indent, context);
     case 'string_search':
       return renderStringSearchExpression(expression, indent, context);
+    case 'string_slice':
+      return renderStringSliceExpression(expression, indent, context);
     case 'local_get':
       return [`${indent}local.get $${sanitizeIdentifier(expression.name)}`];
     case 'global_get':
@@ -6631,6 +6648,108 @@ function renderStringSearchHelperFunctions(plan: WasmGcModulePlanIR): readonly s
   ];
 }
 
+function renderStringSliceHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
+  const usesStringRuntime = plan.typePlans.some((typePlan) =>
+    typePlan.source === 'runtime_family' && typePlan.family === 'string'
+  );
+  if (!usesStringRuntime) return [];
+  const n = sanitizeIdentifier(STRING_SLICE_FUNCTION_NAME);
+  const st = stringRuntimeTypeName();
+  const ca = stringCodeUnitArrayTypeName();
+  return [
+    `  (func $${n} (param $value (ref null ${st})) (param $start i32) (param $end i32) (result (ref null ${st}))`,
+    `    (local $units (ref null ${ca}))`,
+    `    (local $len i32)`,
+    `    (local $i i32)`,
+    `    (local $result_units (ref null ${ca}))`,
+    `    (local $result_len i32)`,
+    `    (local $result (ref null ${st}))`,
+    `    local.get $value`,
+    `    ref.as_non_null`,
+    `    struct.get $${st} $code_units`,
+    `    local.tee $units`,
+    `    array.len`,
+    `    local.set $len`,
+    `    local.get $start`,
+    `    i32.const 0`,
+    `    i32.lt_s`,
+    `    if`,
+    `      local.get $start`,
+    `      local.get $len`,
+    `      i32.add`,
+    `      local.set $start`,
+    `    end`,
+    `    local.get $start`,
+    `    i32.const 0`,
+    `    i32.lt_s`,
+    `    if`,
+    `      i32.const 0`,
+    `      local.set $start`,
+    `    end`,
+    `    local.get $end`,
+    `    i32.const 0`,
+    `    i32.lt_s`,
+    `    if`,
+    `      local.get $end`,
+    `      local.get $len`,
+    `      i32.add`,
+    `      local.set $end`,
+    `    end`,
+    `    local.get $end`,
+    `    local.get $len`,
+    `    i32.gt_u`,
+    `    if`,
+    `      local.get $len`,
+    `      local.set $end`,
+    `    end`,
+    `    local.get $end`,
+    `    local.get $start`,
+    `    i32.sub`,
+    `    local.tee $result_len`,
+    `    i32.const 0`,
+    `    i32.lt_s`,
+    `    if`,
+    `      i32.const 0`,
+    `      local.set $result_len`,
+    `    end`,
+    `    local.get $result_len`,
+    `    array.new_default ${ca}`,
+    `    local.set $result_units`,
+    `    i32.const 0`,
+    `    local.set $i`,
+    `    loop`,
+    `      local.get $i`,
+    `      local.get $result_len`,
+    `      i32.ge_u`,
+    `      br_if 1`,
+    `      local.get $result_units`,
+    `      local.get $i`,
+    `      local.get $units`,
+    `      local.get $start`,
+    `      local.get $i`,
+    `      i32.add`,
+    `      array.get ${ca}`,
+    `      array.set ${ca}`,
+    `      local.get $i`,
+    `      i32.const 1`,
+    `      i32.add`,
+    `      local.set $i`,
+    `      br 0`,
+    `    end`,
+    `    ref.null ${st}`,
+    `    local.set $result`,
+    `    local.get $result`,
+    `    struct.new ${st}`,
+    `    local.set $result`,
+    `    local.get $result`,
+    `    local.get $result_units`,
+    `    struct.set $${st} $code_units`,
+    `    local.get $result`,
+    `    return`,
+    `  )`,
+  ];
+}
+
 function renderStringConcatHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
   const usesStringConcat = plan.helperPlans.some((helper) =>
     helper.family === 'string' && helper.name === 'string_concat' && helper.kind === 'operation'
@@ -7464,6 +7583,7 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
     case 'owned_array_length':
     case 'owned_string_length':
     case 'string_search':
+    case 'string_slice':
       collectBoxedClosureDispatchSignatureIdsFromExpression(
         expression.value,
         signatureIds,
@@ -7935,6 +8055,7 @@ function collectBoxValueTypesFromExpression(
     case 'owned_string_to_host':
     case 'owned_string_length':
     case 'string_search':
+    case 'string_slice':
       collectBoxValueTypesFromExpression(expression.value, valueTypes);
       break;
     case 'call':
@@ -8286,6 +8407,7 @@ function collectArrayRuntimeTypesFromExpression(
     case 'owned_array_length':
     case 'owned_string_length':
     case 'string_search':
+    case 'string_slice':
     case 'tag_number':
     case 'tag_boolean':
     case 'tag_string':
@@ -9627,6 +9749,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         ...indentLines(plan.helperPlans.map(renderHelperPlan)),
         ...stringEqualityHelperFunctions,
         ...renderStringSearchHelperFunctions(plan),
+        ...renderStringSliceHelperFunctions(plan),
         ...stringConcatHelperFunctions,
         ...stringExportWrapperHelperFunctions,
         ...symbolBoundaryWrapperHelperFunctions,

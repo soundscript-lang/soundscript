@@ -93,6 +93,13 @@ export type SemanticExpressionIR =
     search: SemanticExpressionIR;
     representation: 'i32' | 'f64';
   }
+  | {
+    kind: 'string_slice';
+    value: SemanticExpressionIR;
+    start?: SemanticExpressionIR;
+    end?: SemanticExpressionIR;
+    representation: 'owned_string_ref';
+  }
   | { kind: 'local_get'; name: string; representation: CompilerValueType }
   | { kind: 'global_get'; globalName: string; representation: CompilerValueType }
   | {
@@ -3311,6 +3318,7 @@ function collectUnsupportedExpressionKinds(
     case 'owned_string_literal':
     case 'owned_string_length':
     case 'string_search':
+    case 'string_slice':
     case 'local_get':
     case 'global_get':
       break;

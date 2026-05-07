@@ -4869,6 +4869,17 @@ function lowerStringMethodCallExpression(
       representation: 'f64',
     };
   }
+  if ((method === 'slice' || method === 'substring') && (args.length === 1 || args.length === 2)) {
+    const start = args.length >= 1 ? lowerExpression(args[0], context) : undefined;
+    const end = args.length >= 2 ? lowerExpression(args[1], context) : undefined;
+    return {
+      kind: 'string_slice',
+      value: receiver,
+      start,
+      end,
+      representation: 'owned_string_ref',
+    };
+  }
   return undefined;
 }
 

@@ -3993,3 +3993,15 @@ Deno.test('compileProject selects source-hir for string indexOf/lastIndexOf', as
   const plan = createWasmGcModulePlan(semantic, createRuntimeManifestFromSemanticModule(semantic));
   assertEquals(plan.functionPlans.every(f => f.bodyStatus === 'emittable'), true);
 });
+
+Deno.test('compileProject selects source-hir for string slice/substring', async () => {
+  const tempDirectory = await createTempProject([
+    { path: 'tsconfig.json', contents: JSON.stringify({ compilerOptions: { strict: true, noEmit: true, target: 'ES2022', module: 'ESNext', lib: ['ES2022'] }, include: ['src/**/*.ts'], soundscript: { target: 'wasm-node' } }, null, 2) },
+    { path: 'src/index.ts', contents: 'export function test(s: string): string { return s.slice(1, 4) + s.substring(2); }' },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const plan = createWasmGcModulePlan(semantic, createRuntimeManifestFromSemanticModule(semantic));
+  assertEquals(plan.functionPlans.every(f => f.bodyStatus === 'emittable'), true);
+});
