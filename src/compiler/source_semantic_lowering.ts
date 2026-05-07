@@ -4859,6 +4859,16 @@ function lowerStringMethodCallExpression(
       representation: 'i32',
     };
   }
+  if ((method === 'indexOf' || method === 'lastIndexOf') && args.length >= 1) {
+    const search = lowerExpression(args[0], context);
+    return {
+      kind: 'string_search',
+      searchKind: method as 'indexOf' | 'lastIndexOf',
+      value: receiver,
+      search,
+      representation: 'f64',
+    };
+  }
   return undefined;
 }
 

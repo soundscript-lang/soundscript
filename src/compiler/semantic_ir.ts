@@ -88,10 +88,10 @@ export type SemanticExpressionIR =
   }
   | {
     kind: 'string_search';
-    searchKind: 'includes' | 'startsWith' | 'endsWith';
+    searchKind: 'includes' | 'startsWith' | 'endsWith' | 'indexOf' | 'lastIndexOf';
     value: SemanticExpressionIR;
     search: SemanticExpressionIR;
-    representation: 'i32';
+    representation: 'i32' | 'f64';
   }
   | { kind: 'local_get'; name: string; representation: CompilerValueType }
   | { kind: 'global_get'; globalName: string; representation: CompilerValueType }
