@@ -677,14 +677,21 @@ function lowerPromiseThenCallExpression(
     return undefined;
   }
   const methodName = expression.callee.property;
-  const aritySupported = methodName === 'then'
-    ? expression.args.length >= 1 && expression.args.length <= 2
-    : expression.args.length === 1;
-  if (!aritySupported) {
+  if (methodName === 'then' ? expression.args.length < 1 : expression.args.length < 1) {
     context.unsupportedKinds.add(`Promise.${methodName}:arity`);
     return { kind: 'undefined_literal', representation: 'tagged_ref' };
   }
-  const receiver = lowerExpression(expression.callee.object, context);
+  let receiver = lowerExpression(expression.callee.object, context);
+  if (receiver.representation === 'tagged_ref') {
+    const untaggedName = nextTempLocalName(context, 'promise_receiver_untagged');
+    addLocal(context, untaggedName, 'heap_ref');
+    context.pendingStatements.push({
+      kind: 'local_set',
+      name: untaggedName,
+      value: { kind: 'untag_heap_object', value: receiver, representation: 'heap_ref' },
+    });
+    receiver = { kind: 'local_get', name: untaggedName, representation: 'heap_ref' };
+  }
   if (receiver.representation !== 'heap_ref') {
     context.unsupportedKinds.add(`Promise.${methodName}:receiver`);
     return { kind: 'undefined_literal', representation: 'tagged_ref' };
@@ -760,7 +767,7 @@ function lowerPromiseRaceCallExpression(
   ) {
     return undefined;
   }
-  if (expression.args.length !== 1) {
+  if (expression.args.length < 1) {
     context.unsupportedKinds.add('Promise.race:arity');
     return { kind: 'undefined_literal', representation: 'tagged_ref' };
   }
@@ -862,7 +869,7 @@ function lowerPromiseAllCallExpression(
   ) {
     return undefined;
   }
-  if (expression.args.length !== 1) {
+  if (expression.args.length < 1) {
     context.unsupportedKinds.add('Promise.all:arity');
     return { kind: 'undefined_literal', representation: 'tagged_ref' };
   }
@@ -1036,10 +1043,6 @@ function lowerPromiseStaticCallExpression(
     : undefined;
   if (!helperName) {
     return undefined;
-  }
-  if (expression.args.length > 1) {
-    context.unsupportedKinds.add(`Promise.${expression.callee.property}:arity`);
-    return { kind: 'undefined_literal', representation: 'tagged_ref' };
   }
   const rawValue = expression.args[0]
     ? lowerExpression(expression.args[0], context)
