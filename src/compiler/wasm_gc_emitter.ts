@@ -5981,14 +5981,13 @@ function renderStringEqualityHelperFunctions(plan: WasmGcModulePlanIR): readonly
     typePlan.source === 'runtime_family' && typePlan.family === 'string'
   );
   const usesStringIndexOf =
+    usesStringRuntime ||
     plan.functionPlans.some((func) => !func.hostImport && functionUsesStringArrayIndexOf(func)) ||
     plan.functionPlans.some((func) => !func.hostImport && functionUsesStringEquality(func)) ||
     plan.functionPlans.some((func) => !func.hostImport && functionUsesMapStorage(func)) ||
     [...wrapperPlanCollectionHostToInternalBoundaryAdapters(plan)].some((adapter) =>
       adapter.kind === 'map' || (adapter.kind === 'set' && valueBoundaryUsesString(adapter.value))
-    ) ||
-    (usesStringRuntime &&
-      plan.functionPlans.some((func) => !func.hostImport && functionUsesTaggedArrayIndexOf(func)));
+    );
   return usesStringIndexOf
     ? [
       `  (func $${

@@ -3950,3 +3950,22 @@ Deno.test('compileProject selects source-hir for host import interop', async () 
   assertEquals(result.exitCode, 0);
   assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
 });
+
+Deno.test('compileProject selects source-hir for string equality', async () => {
+  const tempDirectory = await createTempProject([
+    { path: 'tsconfig.json', contents: JSON.stringify({ compilerOptions: { strict: true, noEmit: true, target: 'ES2022', module: 'ESNext', lib: ['ES2022'] }, include: ['src/**/*.ts'], soundscript: { target: 'wasm-node' } }, null, 2) },
+    { path: 'src/index.ts', contents: 'export function test(a: string, b: string): number { if (a === b) { return 1; } return 0; }' },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const plan = createWasmGcModulePlan(semantic, createRuntimeManifestFromSemanticModule(semantic));
+  assertEquals(plan.functionPlans.every(f => f.bodyStatus === 'emittable'), true);
+  const wat = emitWasmGcModulePlan(plan);
+  const testPlan = plan.functionPlans.find(f => f.name === 'test');
+  assertEquals(testPlan?.bodyStatus, 'emittable');
+  assertEquals(testPlan?.unsupportedBodyKinds?.length ?? 0, 0);
+  const result = compileProject({ projectPath: join(tempDirectory, 'tsconfig.json'), workingDirectory: tempDirectory });
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
+});

@@ -3477,6 +3477,20 @@ function lowerExpression(
         };
       }
       if (
+        (expression.operator === '===' || expression.operator === '!==') &&
+        left.representation === 'owned_string_ref' &&
+        right.representation === 'owned_string_ref'
+      ) {
+        context.runtimeFamilies.add('string');
+        return {
+          kind: 'binary',
+          op: expression.operator === '===' ? 'string.eq' : 'string.ne',
+          left,
+          right,
+          representation: 'i32',
+        };
+      }
+      if (
         ['+', '-', '*', '/', '>', '>=', '<', '<='].includes(expression.operator) &&
         left.representation === 'tagged_ref' &&
         right.representation === 'f64'
