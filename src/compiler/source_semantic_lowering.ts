@@ -10613,6 +10613,49 @@ function codeUnitsForString(value: string): readonly number[] {
   return codeUnits;
 }
 
+function expandYieldStarInBody(
+  body: readonly SourceStatementIR[],
+): readonly SourceStatementIR[] {
+  const result: SourceStatementIR[] = [];
+  let tempIndex = 0;
+  for (const statement of body) {
+    if (statement.kind === 'expression_statement' &&
+      typeof statement.expression === 'object' &&
+      (statement.expression as { kind: string }).kind === 'yield_star_expression') {
+      const yieldStar = statement.expression as { kind: 'yield_star_expression'; expression: SourceExpressionIR };
+      const delegate = yieldStar.expression;
+      if (delegate.kind === 'call_expression' &&
+        delegate.callee.kind === 'property_access' &&
+        (delegate.callee.property === 'values' || delegate.callee.property === 'keys') &&
+        delegate.callee.object.kind === 'identifier' &&
+        delegate.args.length === 0) {
+        const tempName = `__yield_star_temp_${tempIndex}`;
+        tempIndex += 1;
+        const tempBinding: import('./source_hir.ts').SourceBindingIR = { kind: 'identifier_binding' as const, name: tempName, span: statement.span };
+        result.push({
+          kind: 'for_of' as const,
+          left: { kind: 'identifier_binding' as const, name: tempName, span: statement.span },
+          right: delegate,
+          body: [{
+            kind: 'expression_statement' as const,
+            expression: {
+              kind: 'yield_expression' as const,
+              expression: { kind: 'identifier' as const, name: tempName, role: 'read' as const, span: statement.span },
+              span: statement.span,
+            },
+            span: statement.span,
+          }],
+          await: false,
+          span: statement.span,
+        });
+        continue;
+      }
+    }
+    result.push(statement);
+  }
+  return result;
+}
+
 function lowerGeneratorFunctionBody(
   func: SourceFunctionIR,
   context: FunctionLoweringContext,
@@ -10623,7 +10666,8 @@ function lowerGeneratorFunctionBody(
   if (func.async) {
     return lowerAsyncGeneratorFunctionBody(func, context);
   }
-  const plan = buildSourceGeneratorFramePlan(func.body);
+  const body = expandYieldStarInBody(func.body);
+  const plan = buildSourceGeneratorFramePlan(body);
   if (!plan) {
     context.unsupportedKinds.add('generator_frame_plan_failed');
     return [{ kind: 'unsupported_statement', sourceKind: 'generator' }];
