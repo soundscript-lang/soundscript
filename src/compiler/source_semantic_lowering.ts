@@ -7347,8 +7347,7 @@ function lowerClassStaticPropertyAccessExpression(
     return undefined;
   }
   if (!property.initializer) {
-    context.unsupportedKinds.add(`static_class_property:${classInfo.name}.${property.name}`);
-    return undefined;
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
   }
   return lowerExpression(property.initializer, context);
 }
@@ -7392,12 +7391,6 @@ function lowerClassStaticMethodCallExpression(
     return undefined;
   }
   const preludeStatements = method.body.slice(0, -1);
-  if (sourceStatementsContainControlTransfer(preludeStatements)) {
-    context.unsupportedKinds.add(
-      `static_class_method_control_flow:${classInfo.name}.${method.name}`,
-    );
-    return undefined;
-  }
   const paramBindings: { internalName: string }[] = [];
   const renames = new Map<string, string>();
   const transientNames: string[] = [];
@@ -7511,10 +7504,6 @@ function lowerClassMethodCallExpression(
     return undefined;
   }
   const preludeStatements = method.body.slice(0, -1);
-  if (sourceStatementsContainControlTransfer(preludeStatements)) {
-    context.unsupportedKinds.add(`class_method_control_flow:${method.name}`);
-    return undefined;
-  }
   const renames = new Map<string, string>();
   const transientNames: string[] = [];
   const receiverName = addInlineSourceName(
