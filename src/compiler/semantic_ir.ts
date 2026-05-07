@@ -112,6 +112,40 @@ export type SemanticExpressionIR =
     value: SemanticExpressionIR;
     representation: 'owned_string_ref';
   }
+  | {
+    kind: 'string_code_unit_at';
+    value: SemanticExpressionIR;
+    index: SemanticExpressionIR;
+    representation: 'f64';
+  }
+  | {
+    kind: 'string_split';
+    value: SemanticExpressionIR;
+    separator: SemanticExpressionIR;
+    representation: 'owned_array_ref';
+  }
+  | {
+    kind: 'string_repeat';
+    value: SemanticExpressionIR;
+    count: SemanticExpressionIR;
+    representation: 'owned_string_ref';
+  }
+  | {
+    kind: 'string_pad';
+    sideKind: 'both' | 'start' | 'end';
+    value: SemanticExpressionIR;
+    targetLength: SemanticExpressionIR;
+    padChar: SemanticExpressionIR;
+    representation: 'owned_string_ref';
+  }
+  | {
+    kind: 'string_replace';
+    replaceAll: boolean;
+    value: SemanticExpressionIR;
+    search: SemanticExpressionIR;
+    replacement: SemanticExpressionIR;
+    representation: 'owned_string_ref';
+  }
   | { kind: 'local_get'; name: string; representation: CompilerValueType }
   | { kind: 'global_get'; globalName: string; representation: CompilerValueType }
   | {
@@ -3333,6 +3367,11 @@ function collectUnsupportedExpressionKinds(
     case 'string_slice':
     case 'string_case':
     case 'string_trim':
+    case 'string_code_unit_at':
+    case 'string_split':
+    case 'string_repeat':
+    case 'string_pad':
+    case 'string_replace':
     case 'local_get':
     case 'global_get':
       break;

@@ -4896,6 +4896,57 @@ function lowerStringMethodCallExpression(
       representation: 'owned_string_ref',
     };
   }
+  if ((method === 'charAt' || method === 'charCodeAt') && args.length === 1) {
+    const index = lowerExpression(args[0], context);
+    return {
+      kind: 'string_code_unit_at',
+      value: receiver,
+      index,
+      representation: 'f64',
+    };
+  }
+  if (method === 'split' && args.length === 1) {
+    const separator = lowerExpression(args[0], context);
+    return {
+      kind: 'string_split',
+      value: receiver,
+      separator,
+      representation: 'owned_array_ref',
+    };
+  }
+  if (method === 'repeat' && args.length === 1) {
+    const count = lowerExpression(args[0], context);
+    return {
+      kind: 'string_repeat',
+      value: receiver,
+      count,
+      representation: 'owned_string_ref',
+    };
+  }
+  if ((method === 'padStart' || method === 'padEnd') && args.length >= 1) {
+    const targetLength = lowerExpression(args[0], context);
+    const padChar = args.length >= 2 ? lowerExpression(args[1], context) : undefined;
+    return {
+      kind: 'string_pad',
+      sideKind: method === 'padStart' ? 'start' : 'end',
+      value: receiver,
+      targetLength,
+      padChar: padChar ?? { kind: 'owned_string_literal', literalId: getStringLiteralId(context, ' '), representation: 'owned_string_ref' },
+      representation: 'owned_string_ref',
+    };
+  }
+  if ((method === 'replace' || method === 'replaceAll') && args.length === 2) {
+    const search = lowerExpression(args[0], context);
+    const replacement = lowerExpression(args[1], context);
+    return {
+      kind: 'string_replace',
+      replaceAll: method === 'replaceAll',
+      value: receiver,
+      search,
+      replacement,
+      representation: 'owned_string_ref',
+    };
+  }
   return undefined;
 }
 

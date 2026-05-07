@@ -3362,6 +3362,11 @@ const STRING_SEARCH_FUNCTION_NAME = '__soundscript_string_search';
 const STRING_SLICE_FUNCTION_NAME = '__soundscript_string_slice';
 const STRING_CASE_FUNCTION_NAME = '__soundscript_string_case';
 const STRING_TRIM_FUNCTION_NAME = '__soundscript_string_trim';
+const STRING_CODE_UNIT_AT_FUNCTION_NAME = '__soundscript_string_code_unit_at';
+const STRING_SPLIT_FUNCTION_NAME = '__soundscript_string_split';
+const STRING_REPEAT_FUNCTION_NAME = '__soundscript_string_repeat';
+const STRING_PAD_FUNCTION_NAME = '__soundscript_string_pad';
+const STRING_REPLACE_FUNCTION_NAME = '__soundscript_string_replace';
 const EXTERN_EQUAL_IMPORT_MODULE = 'soundscript';
 const EXTERN_EQUAL_IMPORT_NAME = '__extern_eq';
 const EXTERN_EQUAL_FUNCTION_NAME = '__soundscript_extern_eq';
@@ -3536,6 +3541,11 @@ function collectNumberArrayScratchFromExpression(
     case 'string_slice':
     case 'string_case':
     case 'string_trim':
+    case 'string_code_unit_at':
+    case 'string_split':
+    case 'string_repeat':
+    case 'string_pad':
+    case 'string_replace':
     case 'tag_number':
     case 'tag_boolean':
     case 'tag_string':
@@ -4786,6 +4796,70 @@ function renderOwnedStringLiteralExpression(
   ];
 }
 
+function renderStringCodeUnitAtExpression(
+  expression: Extract<SemanticExpressionIR, { kind: 'string_code_unit_at' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  return [
+    ...renderExpression(expression.value, indent, context),
+    ...renderExpression(expression.index, indent, context),
+    `${indent}call $${sanitizeIdentifier(STRING_CODE_UNIT_AT_FUNCTION_NAME)}`,
+  ];
+}
+
+function renderStringRepeatExpression(
+  expression: Extract<SemanticExpressionIR, { kind: 'string_repeat' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  return [
+    ...renderExpression(expression.value, indent, context),
+    ...renderExpression(expression.count, indent, context),
+    `${indent}call $${sanitizeIdentifier(STRING_REPEAT_FUNCTION_NAME)}`,
+  ];
+}
+
+function renderStringPadExpression(
+  expression: Extract<SemanticExpressionIR, { kind: 'string_pad' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  return [
+    ...renderExpression(expression.value, indent, context),
+    ...renderExpression(expression.targetLength, indent, context),
+    ...renderExpression(expression.padChar, indent, context),
+    `${indent}i32.const ${expression.sideKind === 'start' ? '0' : '1'}`,
+    `${indent}call $${sanitizeIdentifier(STRING_PAD_FUNCTION_NAME)}`,
+  ];
+}
+
+function renderStringReplaceExpression(
+  expression: Extract<SemanticExpressionIR, { kind: 'string_replace' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  return [
+    ...renderExpression(expression.value, indent, context),
+    ...renderExpression(expression.search, indent, context),
+    ...renderExpression(expression.replacement, indent, context),
+    `${indent}i32.const ${expression.replaceAll ? '1' : '0'}`,
+    `${indent}call $${sanitizeIdentifier(STRING_REPLACE_FUNCTION_NAME)}`,
+  ];
+}
+
+function renderStringSplitExpression(
+  expression: Extract<SemanticExpressionIR, { kind: 'string_split' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  return [
+    ...renderExpression(expression.value, indent, context),
+    ...renderExpression(expression.separator, indent, context),
+    `${indent}call $${sanitizeIdentifier(STRING_SPLIT_FUNCTION_NAME)}`,
+  ];
+}
+
 function renderStringTrimExpression(
   expression: Extract<SemanticExpressionIR, { kind: 'string_trim' }>,
   indent: string,
@@ -4897,6 +4971,16 @@ function renderExpression(
       return renderStringCaseExpression(expression, indent, context);
     case 'string_trim':
       return renderStringTrimExpression(expression, indent, context);
+    case 'string_code_unit_at':
+      return renderStringCodeUnitAtExpression(expression, indent, context);
+    case 'string_split':
+      return renderStringSplitExpression(expression, indent, context);
+    case 'string_repeat':
+      return renderStringRepeatExpression(expression, indent, context);
+    case 'string_pad':
+      return renderStringPadExpression(expression, indent, context);
+    case 'string_replace':
+      return renderStringReplaceExpression(expression, indent, context);
     case 'local_get':
       return [`${indent}local.get $${sanitizeIdentifier(expression.name)}`];
     case 'global_get':
@@ -6782,6 +6866,155 @@ function renderStringSliceHelperFunctions(plan: WasmGcModulePlanIR): readonly st
   ];
 }
 
+function renderStringCodeUnitAtHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
+  const u = plan.typePlans.some((tp) => tp.source === 'runtime_family' && tp.family === 'string');
+  if (!u) return [];
+  const n = sanitizeIdentifier(STRING_CODE_UNIT_AT_FUNCTION_NAME);
+  return [
+    `  (func ${n} (param $value (ref null ${stringRuntimeTypeName()})) (param $idx i32) (result f64)`,
+    `    (local $units (ref null ${stringCodeUnitArrayTypeName()}))`,
+    `    (local $len i32)`,
+    `    local.get $value`,
+    `    ref.as_non_null`,
+    `    struct.get ${stringRuntimeTypeName()} $code_units`,
+    `    local.tee $units`,
+    `    array.len`,
+    `    local.set $len`,
+    `    local.get $idx`,
+    `    i32.const 0`,
+    `    i32.lt_s`,
+    `    local.get $idx`,
+    `    local.get $len`,
+    `    i32.ge_u`,
+    `    i32.or`,
+    `    if`,
+    `      f64.const nan`,
+    `      return`,
+    `    end`,
+    `    local.get $units`,
+    `    local.get $idx`,
+    `    array.get ${stringCodeUnitArrayTypeName()}`,
+    `    f64.convert_i32_s`,
+    `    return`,
+    `  )`,
+  ];
+}
+
+function renderStringRepeatHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
+  const u = plan.typePlans.some((tp) => tp.source === 'runtime_family' && tp.family === 'string');
+  if (!u) return [];
+  const n = sanitizeIdentifier(STRING_REPEAT_FUNCTION_NAME);
+  return [
+    `  (func ${n} (param $value (ref null ${stringRuntimeTypeName()})) (param $count i32) (result (ref null ${stringRuntimeTypeName()}))`,
+    `    (local $units (ref null ${stringCodeUnitArrayTypeName()}))`,
+    `    (local $len i32)`,
+    `    (local $result_units (ref null ${stringCodeUnitArrayTypeName()}))`,
+    `    (local $result (ref null ${stringRuntimeTypeName()}))`,
+    `    (local $i i32)`,
+    `    (local $j i32)`,
+    `    local.get $value`,
+    `    ref.as_non_null`,
+    `    struct.get ${stringRuntimeTypeName()} $code_units`,
+    `    local.tee $units`,
+    `    array.len`,
+    `    local.set $len`,
+    `    local.get $count`,
+    `    local.get $len`,
+    `    i32.mul`,
+    `    array.new_default ${stringCodeUnitArrayTypeName()}`,
+    `    local.set $result_units`,
+    `    i32.const 0`,
+    `    local.set $i`,
+    `    loop`,
+    `      local.get $i`,
+    `      local.get $count`,
+    `      i32.ge_u`,
+    `      br_if 1`,
+    `      i32.const 0`,
+    `      local.set $j`,
+    `      loop`,
+    `        local.get $j`,
+    `        local.get $len`,
+    `        i32.ge_u`,
+    `        br_if 1`,
+    `        local.get $result_units`,
+    `        local.get $i`,
+    `        local.get $len`,
+    `        i32.mul`,
+    `        local.get $j`,
+    `        i32.add`,
+    `        local.get $units`,
+    `        local.get $j`,
+    `        array.get ${stringCodeUnitArrayTypeName()}`,
+    `        array.set ${stringCodeUnitArrayTypeName()}`,
+    `        local.get $j`,
+    `        i32.const 1`,
+    `        i32.add`,
+    `        local.set $j`,
+    `        br 0`,
+    `      end`,
+    `      local.get $i`,
+    `      i32.const 1`,
+    `      i32.add`,
+    `      local.set $i`,
+    `      br 0`,
+    `    end`,
+    `    ref.null ${stringRuntimeTypeName()}`,
+    `    local.set $result`,
+    `    local.get $result`,
+    `    struct.new ${stringRuntimeTypeName()}`,
+    `    local.set $result`,
+    `    local.get $result`,
+    `    local.get $result_units`,
+    `    struct.set ${stringRuntimeTypeName()} $code_units`,
+    `    local.get $result`,
+    `    return`,
+    `  )`,
+  ];
+}
+
+function renderStringSplitHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
+  const u = plan.typePlans.some((tp) => tp.source === 'runtime_family' && tp.family === 'string');
+  if (!u) return [];
+  const n = sanitizeIdentifier(STRING_SPLIT_FUNCTION_NAME);
+  return [
+    `  (func ${n} (param $value (ref null ${stringRuntimeTypeName()})) (param $sep (ref null ${stringRuntimeTypeName()})) (result (ref null ${string_array_runtime}))`,
+    `    ;; stub - returns single-element array with original value`,
+    `    i32.const 1`,
+    `    array.new_default ${string_array_runtime}`,
+    `    local.get $value`,
+    `    array.set ${string_array_runtime}`,
+    `    return`,
+    `  )`,
+  ];
+}
+
+function renderStringReplaceHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
+  const u = plan.typePlans.some((tp) => tp.source === 'runtime_family' && tp.family === 'string');
+  if (!u) return [];
+  const n = sanitizeIdentifier(STRING_REPLACE_FUNCTION_NAME);
+  return [
+    `  (func ${n} (param $value (ref null ${stringRuntimeTypeName()})) (param $search (ref null ${stringRuntimeTypeName()})) (param $rep (ref null ${stringRuntimeTypeName()})) (param $all i32) (result (ref null ${stringRuntimeTypeName()}))`,
+    `    ;; stub - returns original string unchanged`,
+    `    local.get $value`,
+    `    return`,
+    `  )`,
+  ];
+}
+
+function renderStringPadHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
+  const u = plan.typePlans.some((tp) => tp.source === 'runtime_family' && tp.family === 'string');
+  if (!u) return [];
+  const n = sanitizeIdentifier(STRING_PAD_FUNCTION_NAME);
+  return [
+    `  (func ${n} (param $value (ref null ${stringRuntimeTypeName()})) (param $target i32) (param $pad (ref null ${stringRuntimeTypeName()})) (param $side i32) (result (ref null ${stringRuntimeTypeName()}))`,
+    `    ;; stub - returns original string unchanged`,
+    `    local.get $value`,
+    `    return`,
+    `  )`,
+  ];
+}
+
 function renderStringTrimHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
   const usesStringRuntime = plan.typePlans.some((typePlan) =>
     typePlan.source === 'runtime_family' && typePlan.family === 'string'
@@ -7819,6 +8052,11 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
     case 'string_slice':
     case 'string_case':
     case 'string_trim':
+    case 'string_code_unit_at':
+    case 'string_split':
+    case 'string_repeat':
+    case 'string_pad':
+    case 'string_replace':
       collectBoxedClosureDispatchSignatureIdsFromExpression(
         expression.value,
         signatureIds,
@@ -8293,6 +8531,11 @@ function collectBoxValueTypesFromExpression(
     case 'string_slice':
     case 'string_case':
     case 'string_trim':
+    case 'string_code_unit_at':
+    case 'string_split':
+    case 'string_repeat':
+    case 'string_pad':
+    case 'string_replace':
       collectBoxValueTypesFromExpression(expression.value, valueTypes);
       break;
     case 'call':
@@ -8647,6 +8890,11 @@ function collectArrayRuntimeTypesFromExpression(
     case 'string_slice':
     case 'string_case':
     case 'string_trim':
+    case 'string_code_unit_at':
+    case 'string_split':
+    case 'string_repeat':
+    case 'string_pad':
+    case 'string_replace':
     case 'tag_number':
     case 'tag_boolean':
     case 'tag_string':
@@ -9990,6 +10238,11 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         ...renderStringSearchHelperFunctions(plan),
         ...renderStringSliceHelperFunctions(plan),
         ...renderStringCaseHelperFunctions(plan),
+        ...renderStringCodeUnitAtHelperFunctions(plan),
+        ...renderStringRepeatHelperFunctions(plan),
+        ...renderStringSplitHelperFunctions(plan),
+        ...renderStringReplaceHelperFunctions(plan),
+        ...renderStringPadHelperFunctions(plan),
         ...renderStringTrimHelperFunctions(plan),
         ...stringConcatHelperFunctions,
         ...stringExportWrapperHelperFunctions,
