@@ -4880,6 +4880,14 @@ function lowerStringMethodCallExpression(
       representation: 'owned_string_ref',
     };
   }
+  if ((method === 'toLowerCase' || method === 'toUpperCase') && args.length === 0) {
+    return {
+      kind: 'string_case',
+      caseKind: method === 'toLowerCase' ? 'lower' : 'upper',
+      value: receiver,
+      representation: 'owned_string_ref',
+    };
+  }
   return undefined;
 }
 

@@ -3360,6 +3360,7 @@ const STRING_EQUAL_FUNCTION_NAME = '__soundscript_string_eq';
 const STRING_CONCAT_FUNCTION_NAME = '__soundscript_string_concat';
 const STRING_SEARCH_FUNCTION_NAME = '__soundscript_string_search';
 const STRING_SLICE_FUNCTION_NAME = '__soundscript_string_slice';
+const STRING_CASE_FUNCTION_NAME = '__soundscript_string_case';
 const EXTERN_EQUAL_IMPORT_MODULE = 'soundscript';
 const EXTERN_EQUAL_IMPORT_NAME = '__extern_eq';
 const EXTERN_EQUAL_FUNCTION_NAME = '__soundscript_extern_eq';
@@ -3532,6 +3533,7 @@ function collectNumberArrayScratchFromExpression(
     case 'owned_string_length':
     case 'string_search':
     case 'string_slice':
+    case 'string_case':
     case 'tag_number':
     case 'tag_boolean':
     case 'tag_string':
@@ -4782,6 +4784,18 @@ function renderOwnedStringLiteralExpression(
   ];
 }
 
+function renderStringCaseExpression(
+  expression: Extract<SemanticExpressionIR, { kind: 'string_case' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  return [
+    ...renderExpression(expression.value, indent, context),
+    `${indent}i32.const ${expression.caseKind === 'lower' ? '0' : '1'}`,
+    `${indent}call $${sanitizeIdentifier(STRING_CASE_FUNCTION_NAME)}`,
+  ];
+}
+
 function renderStringSliceExpression(
   expression: Extract<SemanticExpressionIR, { kind: 'string_slice' }>,
   indent: string,
@@ -4865,6 +4879,9 @@ function renderExpression(
       return renderStringSearchExpression(expression, indent, context);
     case 'string_slice':
       return renderStringSliceExpression(expression, indent, context);
+    case 'string_case':
+      return renderStringCaseExpression(expression, indent, context);
+      return renderStringCaseExpression(expression, indent, context);
     case 'local_get':
       return [`${indent}local.get $${sanitizeIdentifier(expression.name)}`];
     case 'global_get':
@@ -6750,6 +6767,97 @@ function renderStringSliceHelperFunctions(plan: WasmGcModulePlanIR): readonly st
   ];
 }
 
+function renderStringCaseHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
+  const usesStringRuntime = plan.typePlans.some((typePlan) =>
+    typePlan.source === 'runtime_family' && typePlan.family === 'string'
+  );
+  if (!usesStringRuntime) return [];
+  const n = sanitizeIdentifier(STRING_CASE_FUNCTION_NAME);
+  const st = stringRuntimeTypeName();
+  const ca = stringCodeUnitArrayTypeName();
+  return [
+    `  (func $${n} (param $value (ref null ${st})) (param $kind i32) (result (ref null ${st}))`,
+    `    (local $units (ref null ${ca}))`,
+    `    (local $len i32)`,
+    `    (local $i i32)`,
+    `    (local $cu i32)`,
+    `    (local $result_units (ref null ${ca}))`,
+    `    (local $result (ref null ${st}))`,
+    `    local.get $value`,
+    `    ref.as_non_null`,
+    `    struct.get $${st} $code_units`,
+    `    local.tee $units`,
+    `    array.len`,
+    `    local.tee $len`,
+    `    array.new_default ${ca}`,
+    `    local.set $result_units`,
+    `    i32.const 0`,
+    `    local.set $i`,
+    `    loop`,
+    `      local.get $i`,
+    `      local.get $len`,
+    `      i32.ge_u`,
+    `      br_if 1`,
+    `      local.get $units`,
+    `      local.get $i`,
+    `      array.get ${ca}`,
+    `      local.set $cu`,
+    `      local.get $kind`,
+    `      i32.const 0`,
+    `      i32.eq`,
+    `      if`,
+    `        local.get $cu`,
+    `        i32.const 65`,
+    `        i32.ge_u`,
+    `        local.get $cu`,
+    `        i32.const 90`,
+    `        i32.le_u`,
+    `        i32.and`,
+    `        if`,
+    `          local.get $cu`,
+    `          i32.const 32`,
+    `          i32.add`,
+    `          local.set $cu`,
+    `        end`,
+    `      else`,
+    `        local.get $cu`,
+    `        i32.const 97`,
+    `        i32.ge_u`,
+    `        local.get $cu`,
+    `        i32.const 122`,
+    `        i32.le_u`,
+    `        i32.and`,
+    `        if`,
+    `          local.get $cu`,
+    `          i32.const 32`,
+    `          i32.sub`,
+    `          local.set $cu`,
+    `        end`,
+    `      end`,
+    `      local.get $result_units`,
+    `      local.get $i`,
+    `      local.get $cu`,
+    `      array.set ${ca}`,
+    `      local.get $i`,
+    `      i32.const 1`,
+    `      i32.add`,
+    `      local.set $i`,
+    `      br 0`,
+    `    end`,
+    `    ref.null ${st}`,
+    `    local.set $result`,
+    `    local.get $result`,
+    `    struct.new ${st}`,
+    `    local.set $result`,
+    `    local.get $result`,
+    `    local.get $result_units`,
+    `    struct.set $${st} $code_units`,
+    `    local.get $result`,
+    `    return`,
+    `  )`,
+  ];
+}
+
 function renderStringConcatHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
   const usesStringConcat = plan.helperPlans.some((helper) =>
     helper.family === 'string' && helper.name === 'string_concat' && helper.kind === 'operation'
@@ -7584,6 +7692,7 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
     case 'owned_string_length':
     case 'string_search':
     case 'string_slice':
+    case 'string_case':
       collectBoxedClosureDispatchSignatureIdsFromExpression(
         expression.value,
         signatureIds,
@@ -8056,6 +8165,7 @@ function collectBoxValueTypesFromExpression(
     case 'owned_string_length':
     case 'string_search':
     case 'string_slice':
+    case 'string_case':
       collectBoxValueTypesFromExpression(expression.value, valueTypes);
       break;
     case 'call':
@@ -8408,6 +8518,7 @@ function collectArrayRuntimeTypesFromExpression(
     case 'owned_string_length':
     case 'string_search':
     case 'string_slice':
+    case 'string_case':
     case 'tag_number':
     case 'tag_boolean':
     case 'tag_string':
@@ -9750,6 +9861,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         ...stringEqualityHelperFunctions,
         ...renderStringSearchHelperFunctions(plan),
         ...renderStringSliceHelperFunctions(plan),
+        ...renderStringCaseHelperFunctions(plan),
         ...stringConcatHelperFunctions,
         ...stringExportWrapperHelperFunctions,
         ...symbolBoundaryWrapperHelperFunctions,
