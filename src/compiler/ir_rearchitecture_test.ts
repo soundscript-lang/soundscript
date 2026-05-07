@@ -3969,3 +3969,15 @@ Deno.test('compileProject selects source-hir for string equality', async () => {
   assertEquals(result.exitCode, 0);
   assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
 });
+
+Deno.test('compileProject selects source-hir for string includes/startsWith/endsWith', async () => {
+  const tempDirectory = await createTempProject([
+    { path: 'tsconfig.json', contents: JSON.stringify({ compilerOptions: { strict: true, noEmit: true, target: 'ES2022', module: 'ESNext', lib: ['ES2022'] }, include: ['src/**/*.ts'], soundscript: { target: 'wasm-node' } }, null, 2) },
+    { path: 'src/index.ts', contents: 'export function test(s: string): number { if (s.includes("he")) { return 1; } if (s.startsWith("he")) { return 2; } if (s.endsWith("ld")) { return 3; } return 0; }' },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const plan = createWasmGcModulePlan(semantic, createRuntimeManifestFromSemanticModule(semantic));
+  assertEquals(plan.functionPlans.every(f => f.bodyStatus === 'emittable'), true);
+});

@@ -86,6 +86,13 @@ export type SemanticExpressionIR =
     value: SemanticExpressionIR;
     representation: 'f64';
   }
+  | {
+    kind: 'string_search';
+    searchKind: 'includes' | 'startsWith' | 'endsWith';
+    value: SemanticExpressionIR;
+    search: SemanticExpressionIR;
+    representation: 'i32';
+  }
   | { kind: 'local_get'; name: string; representation: CompilerValueType }
   | { kind: 'global_get'; globalName: string; representation: CompilerValueType }
   | {
@@ -3302,6 +3309,8 @@ function collectUnsupportedExpressionKinds(
     case 'null_literal':
     case 'heap_null':
     case 'owned_string_literal':
+    case 'owned_string_length':
+    case 'string_search':
     case 'local_get':
     case 'global_get':
       break;

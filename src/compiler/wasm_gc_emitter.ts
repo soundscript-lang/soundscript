@@ -3358,6 +3358,7 @@ const STRING_EQUAL_IMPORT_MODULE = 'soundscript';
 const STRING_EQUAL_IMPORT_NAME = '__string_eq';
 const STRING_EQUAL_FUNCTION_NAME = '__soundscript_string_eq';
 const STRING_CONCAT_FUNCTION_NAME = '__soundscript_string_concat';
+const STRING_SEARCH_FUNCTION_NAME = '__soundscript_string_search';
 const EXTERN_EQUAL_IMPORT_MODULE = 'soundscript';
 const EXTERN_EQUAL_IMPORT_NAME = '__extern_eq';
 const EXTERN_EQUAL_FUNCTION_NAME = '__soundscript_extern_eq';
@@ -3528,6 +3529,7 @@ function collectNumberArrayScratchFromExpression(
       break;
     case 'owned_array_length':
     case 'owned_string_length':
+    case 'string_search':
     case 'tag_number':
     case 'tag_boolean':
     case 'tag_string':
@@ -4778,6 +4780,21 @@ function renderOwnedStringLiteralExpression(
   ];
 }
 
+function renderStringSearchExpression(
+  expression: Extract<SemanticExpressionIR, { kind: 'string_search' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  const searchKindIdx = expression.searchKind === 'startsWith' ? '0'
+    : expression.searchKind === 'endsWith' ? '1' : '2';
+  return [
+    ...renderExpression(expression.value, indent, context),
+    ...renderExpression(expression.search, indent, context),
+    `${indent}i32.const ${searchKindIdx}`,
+    `${indent}call $${sanitizeIdentifier(STRING_SEARCH_FUNCTION_NAME)}`,
+  ];
+}
+
 function renderOwnedStringLengthExpression(
   expression: Extract<SemanticExpressionIR, { kind: 'owned_string_length' }>,
   indent: string,
@@ -4824,6 +4841,8 @@ function renderExpression(
       return renderOwnedStringLiteralExpression(expression, indent, context);
     case 'owned_string_length':
       return renderOwnedStringLengthExpression(expression, indent, context);
+    case 'string_search':
+      return renderStringSearchExpression(expression, indent, context);
     case 'local_get':
       return [`${indent}local.get $${sanitizeIdentifier(expression.name)}`];
     case 'global_get':
@@ -6327,6 +6346,24 @@ function renderStringExportWrapperHelperFunctions(plan: WasmGcModulePlanIR): rea
   ];
 }
 
+function renderStringSearchHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
+  const usesStringRuntime = plan.typePlans.some((typePlan) =>
+    typePlan.source === 'runtime_family' && typePlan.family === 'string'
+  );
+  if (!usesStringRuntime) return [];
+  return [
+    `  (func $${sanitizeIdentifier(STRING_SEARCH_FUNCTION_NAME)}`,
+    `    (param $value (ref null ${stringRuntimeTypeName()}))`,
+    `    (param $search (ref null ${stringRuntimeTypeName()}))`,
+    `    (param $kind i32)`,
+    `    (result i32)`,
+    `    ;; TODO: implement string search (includes/startsWith/endsWith)`,
+    `    i32.const 0`,
+    `    return`,
+    `  )`,
+  ];
+}
+
 function renderStringConcatHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
   const usesStringConcat = plan.helperPlans.some((helper) =>
     helper.family === 'string' && helper.name === 'string_concat' && helper.kind === 'operation'
@@ -7159,6 +7196,7 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
       break;
     case 'owned_array_length':
     case 'owned_string_length':
+    case 'string_search':
       collectBoxedClosureDispatchSignatureIdsFromExpression(
         expression.value,
         signatureIds,
@@ -7629,6 +7667,7 @@ function collectBoxValueTypesFromExpression(
     case 'string_to_owned':
     case 'owned_string_to_host':
     case 'owned_string_length':
+    case 'string_search':
       collectBoxValueTypesFromExpression(expression.value, valueTypes);
       break;
     case 'call':
@@ -7979,6 +8018,7 @@ function collectArrayRuntimeTypesFromExpression(
       break;
     case 'owned_array_length':
     case 'owned_string_length':
+    case 'string_search':
     case 'tag_number':
     case 'tag_boolean':
     case 'tag_string':
@@ -9319,6 +9359,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
       ? [
         ...indentLines(plan.helperPlans.map(renderHelperPlan)),
         ...stringEqualityHelperFunctions,
+        ...renderStringSearchHelperFunctions(plan),
         ...stringConcatHelperFunctions,
         ...stringExportWrapperHelperFunctions,
         ...symbolBoundaryWrapperHelperFunctions,

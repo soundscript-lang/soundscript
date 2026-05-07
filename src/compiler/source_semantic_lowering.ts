@@ -3371,6 +3371,10 @@ function lowerExpression(
       if (collectionMethodCall) {
         return collectionMethodCall;
       }
+      const stringMethodCall = lowerStringMethodCallExpression(expression, context);
+      if (stringMethodCall) {
+        return stringMethodCall;
+      }
       const staticMethodCall = lowerClassStaticMethodCallExpression(expression, context);
       if (staticMethodCall) {
         return staticMethodCall;
@@ -4831,6 +4835,29 @@ function lowerSetMethodCallExpression(
     context.runtimeFamilies.add('set');
     context.runtimeFamilies.add('array');
     return localGetExpression(targetName, setLocal.valuesArrayType);
+  }
+  return undefined;
+}
+
+function lowerStringMethodCallExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'call_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (expression.callee.kind !== 'property_access') return undefined;
+  const receiver = lowerExpression(expression.callee.object, context);
+  if (receiver.representation !== 'owned_string_ref') return undefined;
+  const method = expression.callee.property;
+  const args = expression.args;
+  context.runtimeFamilies.add('string');
+  if ((method === 'includes' || method === 'startsWith' || method === 'endsWith') && args.length === 1) {
+    const search = lowerExpression(args[0], context);
+    return {
+      kind: 'string_search',
+      searchKind: method as 'includes' | 'startsWith' | 'endsWith',
+      value: receiver,
+      search,
+      representation: 'i32',
+    };
   }
   return undefined;
 }
