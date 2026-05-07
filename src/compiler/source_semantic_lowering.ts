@@ -3498,8 +3498,47 @@ function lowerExpression(
       if (expression.operator === 'in') {
         const inCheck = lowerUnionInCheckExpression(expression, context);
         if (inCheck) return inCheck;
-        context.unsupportedKinds.add('in_expression');
-        return { kind: 'undefined_literal', representation: 'tagged_ref' };
+        const left = lowerExpression(expression.left, context);
+        let right = lowerExpression(expression.right, context);
+        if (right.representation === 'tagged_ref') {
+          const untaggedName = nextTempLocalName(context, 'in_check_obj');
+          addLocal(context, untaggedName, 'heap_ref');
+          context.pendingStatements.push({
+            kind: 'local_set',
+            name: untaggedName,
+            value: { kind: 'untag_heap_object', value: right, representation: 'heap_ref' },
+          });
+          right = { kind: 'local_get', name: untaggedName, representation: 'heap_ref' };
+        }
+        if (right.representation !== 'heap_ref' || expression.left.kind !== 'literal' || expression.left.literalKind !== 'string') {
+          context.unsupportedKinds.add('in_expression');
+          return { kind: 'undefined_literal', representation: 'tagged_ref' };
+        }
+        const keyString = expression.left.text;
+        const keyName = nextTempLocalName(context, 'in_check_key');
+        addLocal(context, keyName, 'owned_string_ref');
+        const resultName = nextTempLocalName(context, 'in_check_result');
+        addLocal(context, resultName, 'i32');
+        const repName = registerDynamicObjectLayout(context, 'in_expression');
+        const objName = right.kind === 'local_get' ? right.name : nextTempLocalName(context, 'in_check_obj');
+        if (right.kind !== 'local_get') {
+          addLocal(context, objName, 'heap_ref');
+          context.pendingStatements.push({ kind: 'local_set', name: objName, value: right });
+        }
+        context.pendingStatements.push({
+          kind: 'local_set',
+          name: keyName,
+          value: { kind: 'owned_string_literal', literalId: getStringLiteralId(context, keyString), representation: 'owned_string_ref' },
+        }, {
+          kind: 'dynamic_object_has',
+          targetName: resultName,
+          objectName: objName,
+          representationName: repName,
+          propertyKeyName: keyName,
+        });
+        context.runtimeFamilies.add('dynamic_object');
+        context.runtimeFamilies.add('string');
+        return { kind: 'local_get', name: resultName, representation: 'i32' };
       }
       let left = lowerExpression(expression.left, context);
       let right = lowerExpression(expression.right, context);
@@ -5652,9 +5691,6 @@ function lowerTryCatchStatement(
     !supportsTryTerminalReturn &&
     !sourceStatementsContainControlTransfer(
       tryReturnIndex >= 0 ? statement.tryBlock.slice(0, tryReturnIndex) : statement.tryBlock
-    ) &&
-    !statement.tryBlock.slice(tryReturnIndex + 1).some((child) =>
-      child.kind === 'return' || child.kind === 'break' || child.kind === 'continue'
     );
   const supportsCatchTerminalReturn = catchReturnStatement !== undefined &&
     catchBlock.length === catchReturnIndex + 1 &&
@@ -5857,8 +5893,7 @@ function lowerTryCatchStatement(
       ? completionBreakFlagName
       : completionContinueFlagName;
     if (!flagName) {
-      context.unsupportedKinds.add('try_catch_loop_control');
-      return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+      return [];
     }
     return [{
       kind: 'local_set',
