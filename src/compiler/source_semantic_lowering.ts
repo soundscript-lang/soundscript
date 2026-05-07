@@ -7117,7 +7117,7 @@ function lowerClassConstructionDeclaration(
   const properties = classInfo.members.filter((
     member,
   ): member is Extract<SourceClassMemberIR, { kind: 'property' }> =>
-    member.kind === 'property' && !member.static && member.privacy !== 'private'
+    member.kind === 'property' && !member.static
   );
   if (properties.some((property) => !property.initializer)) {
     context.unsupportedKinds.add('class_property_initializer');
@@ -7138,7 +7138,7 @@ function lowerClassConstructionDeclaration(
     if (baseClassInfo) {
       const baseProperties = baseClassInfo.members.filter(
         (member): member is Extract<SourceClassMemberIR, { kind: 'property' }> =>
-          member.kind === 'property' && !member.static && member.privacy !== 'private'
+          member.kind === 'property' && !member.static
       );
       for (const property of baseProperties) {
         if (property.initializer) {
@@ -7190,6 +7190,14 @@ function lowerClassConstructionDeclaration(
   });
 
   if (!constructor) {
+    for (const member of classInfo.members) {
+      if (member.kind === 'static_block') {
+        const staticBody = (member as { kind: 'static_block'; body: readonly SourceStatementIR[] }).body;
+        for (const stmt of staticBody) {
+          statements.push(...lowerStatement(stmt, context));
+        }
+      }
+    }
     return statements;
   }
 
