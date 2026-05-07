@@ -10750,6 +10750,19 @@ export function createSemanticModuleFromSourceHIR(
       }
     }
   }
+  for (const boundarySurface of sharedFacts.boundarySurfaces) {
+    if (boundarySurface.direction === 'import') {
+      const importResultRep = representationForSemanticType(boundarySurface.result);
+      if (importResultRep) {
+        functionResultRepresentations.set(boundarySurface.name, importResultRep);
+      }
+      functionParamTypes.set(
+        boundarySurface.name,
+        boundarySurface.params.map((param) => param.type),
+      );
+      functionResultTypes.set(boundarySurface.name, boundarySurface.result);
+    }
+  }
   const functions = source.modules.flatMap((module) =>
     module.functions.map((func) =>
       lowerFunction(
@@ -10769,6 +10782,35 @@ export function createSemanticModuleFromSourceHIR(
     )
   );
   const allFunctions = [...functions, ...moduleState.generatedFunctions];
+  for (const boundarySurface of sharedFacts.boundarySurfaces) {
+    if (boundarySurface.direction === 'import') {
+      allFunctions.push({
+        name: boundarySurface.name,
+        exportName: '',
+        params: boundarySurface.params.map((param) => ({
+          name: param.name,
+          representation: representationForSemanticType(param.type),
+        })),
+        locals: [],
+        result: representationForSemanticType(boundarySurface.result),
+        body: [],
+        bodyStatus: 'emittable' as const,
+        unsupportedBodyKinds: [],
+        runtimeFamilies: [] as SemanticRuntimeFamilyId[] as string[],
+        hostImported: true,
+        hostExported: false,
+        unionBoundaries: [],
+        hostImport: {
+          module: boundarySurface.path,
+          name: boundarySurface.name,
+        },
+        closureFunctionId: undefined,
+        closureSignatureId: undefined,
+        closureCaptureCount: undefined,
+        closureCaptureValueTypes: undefined,
+      } as SemanticFunctionIR);
+    }
+  }
   const boundarySurfaces = sharedFacts.boundarySurfaces.map((surface) => ({
     ...(surface as SemanticBoundarySurfaceIR),
     runtimeFamilies: collectSemanticRuntimeFamiliesFromTypes([
