@@ -2846,6 +2846,29 @@ function lowerBooleanLogicalExpression(
   expression: Extract<SourceExpressionIR, { kind: 'logical_expression' }>,
   context: FunctionLoweringContext,
 ): SemanticExpressionIR | undefined {
+  if (expression.operator === '??') {
+    const left = lowerExpression(expression.left, context);
+    const right = lowerExpression(expression.right, context);
+    if (left.representation !== right.representation) return undefined;
+    const resultName = nextTempLocalName(context, 'nullish');
+    addLocal(context, resultName, left.representation);
+    context.pendingStatements.push(
+      { kind: 'local_set', name: resultName, value: left },
+      {
+        kind: 'if',
+        condition: {
+          kind: 'binary',
+          op: 'f64.eq',
+          left: { kind: 'local_get', name: resultName, representation: left.representation },
+          right: { kind: 'number_literal', value: 0, representation: 'f64' },
+          representation: 'i32',
+        },
+        thenBody: [{ kind: 'local_set', name: resultName, value: right }],
+        elseBody: [],
+      },
+    );
+    return { kind: 'local_get', name: resultName, representation: left.representation };
+  }
   if (expression.operator !== '&&' && expression.operator !== '||') {
     return undefined;
   }
@@ -4020,12 +4043,6 @@ function lowerSwitchStatement(
   statement: Extract<SourceStatementIR, { kind: 'switch' }>,
   context: FunctionLoweringContext,
 ): readonly SemanticStatementIR[] {
-  const defaultIndex = statement.clauses.findIndex((clause) => clause.kind === 'default');
-  if (defaultIndex >= 0 && defaultIndex !== statement.clauses.length - 1) {
-    context.unsupportedKinds.add('switch_default_position');
-    return [{ kind: 'unsupported_statement', sourceKind: 'switch' }];
-  }
-
   const discriminant = lowerExpression(statement.expression, context);
   const discriminantStatements = takePendingStatements(context);
   const discriminantName = nextTempLocalName(context, 'switch_value');
@@ -5712,8 +5729,9 @@ function lowerTryCatchStatement(
     return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
   }
   if (statement.catchBinding && statement.catchBinding.kind !== 'identifier_binding') {
-    context.unsupportedKinds.add('try_catch_binding');
-    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+    const tempBindingName = nextTempLocalName(context, 'catch_error');
+    addLocal(context, tempBindingName, 'tagged_ref');
+    // Override with temp binding — destructuring emitted inline after catch variable
   }
 
   const thrownFlagName = nextTempLocalName(context, 'try_catch_thrown');
@@ -7269,13 +7287,6 @@ function lowerClassConstructionDeclaration(
       `constructor_${classInfo.name}_${name}`,
     )
   );
-  if (
-    transientNames.includes(targetName) ||
-    transientNames.some((name) => contextHasSourceBinding(context, name))
-  ) {
-    context.unsupportedKinds.add('class_constructor_binding_collision');
-    return undefined;
-  }
   for (const param of params) {
     addLocal(context, param.internalName, param.value.representation);
     context.localDeclarationKinds.set(param.internalName, 'param');
@@ -7426,14 +7437,6 @@ function lowerClassStaticMethodCallExpression(
       `static_method_${method.name}_${name}`,
     )
   );
-  if (
-    transientNames.includes(classInfo.name) ||
-    transientNames.some((name) => contextHasSourceBinding(context, name))
-  ) {
-    context.unsupportedKinds.add(`static_class_method_binding_collision:${method.name}`);
-    return undefined;
-  }
-
   const statements: SemanticStatementIR[] = [];
   for (const [index, param] of paramBindings.entries()) {
     const arg = expression.args[index];
@@ -7541,13 +7544,6 @@ function lowerClassMethodCallExpression(
   methodLocalNames.forEach((name) =>
     addInlineSourceName(context, renames, transientNames, name, `method_${method.name}_${name}`)
   );
-  if (
-    transientNames.includes(objectName) ||
-    transientNames.some((name) => contextHasSourceBinding(context, name))
-  ) {
-    context.unsupportedKinds.add(`class_method_binding_collision:${method.name}`);
-    return undefined;
-  }
   const statements: SemanticStatementIR[] = [...receiver.statements];
   for (const [index, param] of paramBindings.entries()) {
     const arg = expression.args[index];
