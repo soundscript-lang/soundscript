@@ -3367,6 +3367,7 @@ const STRING_SPLIT_FUNCTION_NAME = '__soundscript_string_split';
 const STRING_REPEAT_FUNCTION_NAME = '__soundscript_string_repeat';
 const STRING_PAD_FUNCTION_NAME = '__soundscript_string_pad';
 const STRING_REPLACE_FUNCTION_NAME = '__soundscript_string_replace';
+const POW_FUNCTION_NAME = '__soundscript_pow';
 const EXTERN_EQUAL_IMPORT_MODULE = 'soundscript';
 const EXTERN_EQUAL_IMPORT_NAME = '__extern_eq';
 const EXTERN_EQUAL_FUNCTION_NAME = '__soundscript_extern_eq';
@@ -5340,6 +5341,13 @@ function renderExpression(
           ...renderExpression(expression.right, indent, context),
           `${indent}ref.eq`,
           `${indent}i32.eqz`,
+        ];
+      }
+      if (expression.op === 'f64.pow') {
+        return [
+          ...renderExpression(expression.left, indent, context),
+          ...renderExpression(expression.right, indent, context),
+          `${indent}call $${sanitizeIdentifier(POW_FUNCTION_NAME)}`,
         ];
       }
       return [
@@ -10576,6 +10584,44 @@ function renderHostTaggedWrapperHelperFunctions(plan: WasmGcModulePlanIR): reado
   return helperLines;
 }
 
+function renderPowHelperFunctions(): readonly string[] {
+  const n = sanitizeIdentifier(POW_FUNCTION_NAME);
+  return [
+    `  (func $${n} (param $base f64) (param $exp f64) (result f64)`,
+    `    (local $result f64)`,
+    `    (local $i i32)`,
+    `    f64.const 1`,
+    `    local.set $result`,
+    `    local.get $exp`,
+    `    i32.trunc_f64_s`,
+    `    local.tee $i`,
+    `    i32.const 0`,
+    `    i32.le_s`,
+    `    if`,
+    `      f64.const nan`,
+    `      return`,
+    `    end`,
+    `    loop`,
+    `      local.get $i`,
+    `      i32.const 0`,
+    `      i32.eq`,
+    `      br_if 1`,
+    `      local.get $result`,
+    `      local.get $base`,
+    `      f64.mul`,
+    `      local.set $result`,
+    `      local.get $i`,
+    `      i32.const 1`,
+    `      i32.sub`,
+    `      local.set $i`,
+    `      br 0`,
+    `    end`,
+    `    local.get $result`,
+    `    return`,
+    `  )`,
+  ];
+}
+
 export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   const dynamicLayoutsByRepresentation = dynamicObjectLayoutsByRepresentation(plan);
   const closureFunctionNames = new Map(
@@ -10696,6 +10742,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
       ? [
         ...indentLines(plan.helperPlans.map(renderHelperPlan)),
         ...stringEqualityHelperFunctions,
+        ...renderPowHelperFunctions(),
         ...renderStringSearchHelperFunctions(plan),
         ...renderStringSliceHelperFunctions(plan),
         ...renderStringCaseHelperFunctions(plan),

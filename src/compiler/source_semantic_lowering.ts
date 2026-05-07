@@ -2938,15 +2938,26 @@ function lowerUpdateExpression(
   });
   if (expression.operand.kind === 'identifier') {
     const representation = context.localRepresentations.get(expression.operand.name);
-    if (representation !== 'f64') {
+    if (representation !== 'f64' && representation !== 'i32') {
       return undefined;
     }
+    const isI32 = representation === 'i32';
     const current: SemanticExpressionIR = {
       kind: 'local_get',
       name: expression.operand.name,
-      representation: 'f64',
+      representation: representation!,
     };
-    const updated = updatedExpression(current);
+    const updated: SemanticExpressionIR = {
+      kind: 'binary',
+      op: expression.operator === '++'
+        ? (isI32 ? 'i32.add' : 'f64.add')
+        : (isI32 ? 'i32.sub' : 'f64.sub'),
+      left: current,
+      right: isI32
+        ? { kind: 'boolean_literal', value: true, representation: 'i32' }
+        : { kind: 'number_literal', value: 1, representation: 'f64' },
+      representation: representation!,
+    };
     if (expression.prefix) {
       context.pendingStatements.push({
         kind: 'local_set',
@@ -3513,6 +3524,19 @@ function lowerExpression(
         if (untaggedRight) {
           right = untaggedRight;
         }
+      }
+      if (
+        expression.operator === '**' &&
+        left.representation === 'f64' &&
+        right.representation === 'f64'
+      ) {
+        return {
+          kind: 'binary',
+          op: 'f64.pow',
+          left,
+          right,
+          representation: 'f64',
+        };
       }
       const binary = binaryOperatorForSource(expression.operator, left, right);
       if (!binary) {
