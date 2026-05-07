@@ -106,6 +106,12 @@ export type SemanticExpressionIR =
     value: SemanticExpressionIR;
     representation: 'owned_string_ref';
   }
+  | {
+    kind: 'string_trim';
+    sideKind: 'both' | 'start' | 'end';
+    value: SemanticExpressionIR;
+    representation: 'owned_string_ref';
+  }
   | { kind: 'local_get'; name: string; representation: CompilerValueType }
   | { kind: 'global_get'; globalName: string; representation: CompilerValueType }
   | {
@@ -3326,6 +3332,7 @@ function collectUnsupportedExpressionKinds(
     case 'string_search':
     case 'string_slice':
     case 'string_case':
+    case 'string_trim':
     case 'local_get':
     case 'global_get':
       break;

@@ -3361,6 +3361,7 @@ const STRING_CONCAT_FUNCTION_NAME = '__soundscript_string_concat';
 const STRING_SEARCH_FUNCTION_NAME = '__soundscript_string_search';
 const STRING_SLICE_FUNCTION_NAME = '__soundscript_string_slice';
 const STRING_CASE_FUNCTION_NAME = '__soundscript_string_case';
+const STRING_TRIM_FUNCTION_NAME = '__soundscript_string_trim';
 const EXTERN_EQUAL_IMPORT_MODULE = 'soundscript';
 const EXTERN_EQUAL_IMPORT_NAME = '__extern_eq';
 const EXTERN_EQUAL_FUNCTION_NAME = '__soundscript_extern_eq';
@@ -3534,6 +3535,7 @@ function collectNumberArrayScratchFromExpression(
     case 'string_search':
     case 'string_slice':
     case 'string_case':
+    case 'string_trim':
     case 'tag_number':
     case 'tag_boolean':
     case 'tag_string':
@@ -4784,6 +4786,18 @@ function renderOwnedStringLiteralExpression(
   ];
 }
 
+function renderStringTrimExpression(
+  expression: Extract<SemanticExpressionIR, { kind: 'string_trim' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  return [
+    ...renderExpression(expression.value, indent, context),
+    `${indent}i32.const ${{ both: '0', start: '1', end: '2' }[expression.sideKind]}`,
+    `${indent}call $${sanitizeIdentifier(STRING_TRIM_FUNCTION_NAME)}`,
+  ];
+}
+
 function renderStringCaseExpression(
   expression: Extract<SemanticExpressionIR, { kind: 'string_case' }>,
   indent: string,
@@ -4881,7 +4895,8 @@ function renderExpression(
       return renderStringSliceExpression(expression, indent, context);
     case 'string_case':
       return renderStringCaseExpression(expression, indent, context);
-      return renderStringCaseExpression(expression, indent, context);
+    case 'string_trim':
+      return renderStringTrimExpression(expression, indent, context);
     case 'local_get':
       return [`${indent}local.get $${sanitizeIdentifier(expression.name)}`];
     case 'global_get':
@@ -6767,6 +6782,116 @@ function renderStringSliceHelperFunctions(plan: WasmGcModulePlanIR): readonly st
   ];
 }
 
+function renderStringTrimHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
+  const usesStringRuntime = plan.typePlans.some((typePlan) =>
+    typePlan.source === 'runtime_family' && typePlan.family === 'string'
+  );
+  if (!usesStringRuntime) return [];
+  const n = sanitizeIdentifier(STRING_TRIM_FUNCTION_NAME);
+  const st = stringRuntimeTypeName();
+  const ca = stringCodeUnitArrayTypeName();
+  return [
+    `  (func $${n} (param $value (ref null ${st})) (param $kind i32) (result (ref null ${st}))`,
+    `    (local $units (ref null ${ca}))`,
+    `    (local $len i32)`,
+    `    (local $start i32)`,
+    `    (local $end i32)`,
+    `    (local $cu i32)`,
+    `    local.get $value`,
+    `    ref.as_non_null`,
+    `    struct.get $${st} $code_units`,
+    `    local.tee $units`,
+    `    array.len`,
+    `    local.tee $len`,
+    `    local.set $end`,
+    `    i32.const 0`,
+    `    local.set $start`,
+    `    local.get $kind`,
+    `    i32.const 2`,
+    `    i32.ne`,
+    `    if`,
+    `      loop`,
+    `        local.get $start`,
+    `        local.get $len`,
+    `        i32.ge_u`,
+    `        br_if 1`,
+    `        local.get $units`,
+    `        local.get $start`,
+    `        array.get ${ca}`,
+    `        local.set $cu`,
+    `        i32.const 32`,
+    `        local.get $cu`,
+    `        i32.eq`,
+    `        i32.const 9`,
+    `        local.get $cu`,
+    `        i32.eq`,
+    `        i32.or`,
+    `        i32.const 10`,
+    `        local.get $cu`,
+    `        i32.eq`,
+    `        i32.or`,
+    `        i32.const 13`,
+    `        local.get $cu`,
+    `        i32.eq`,
+    `        i32.or`,
+    `        i32.eqz`,
+    `        br_if 1`,
+    `        local.get $start`,
+    `        i32.const 1`,
+    `        i32.add`,
+    `        local.set $start`,
+    `        br 0`,
+    `      end`,
+    `    end`,
+    `    local.get $kind`,
+    `    i32.const 1`,
+    `    i32.ne`,
+    `    if`,
+    `      loop`,
+    `        local.get $end`,
+    `        i32.const 1`,
+    `        i32.sub`,
+    `        local.tee $end`,
+    `        local.get $start`,
+    `        i32.lt_u`,
+    `        br_if 1`,
+    `        local.get $units`,
+    `        local.get $end`,
+    `        array.get ${ca}`,
+    `        local.set $cu`,
+    `        i32.const 32`,
+    `        local.get $cu`,
+    `        i32.eq`,
+    `        i32.const 9`,
+    `        local.get $cu`,
+    `        i32.eq`,
+    `        i32.or`,
+    `        i32.const 10`,
+    `        local.get $cu`,
+    `        i32.eq`,
+    `        i32.or`,
+    `        i32.const 13`,
+    `        local.get $cu`,
+    `        i32.eq`,
+    `        i32.or`,
+    `        i32.eqz`,
+    `        br_if 1`,
+    `        br 0`,
+    `      end`,
+    `      local.get $end`,
+    `      i32.const 1`,
+    `      i32.add`,
+    `      local.set $end`,
+    `    end`,
+    `    local.get $value`,
+    `    local.get $start`,
+    `    local.get $end`,
+    `    call $${sanitizeIdentifier(STRING_SLICE_FUNCTION_NAME)}`,
+    `    return`,
+    `  )`,
+  ];
+}
+
 function renderStringCaseHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
   const usesStringRuntime = plan.typePlans.some((typePlan) =>
     typePlan.source === 'runtime_family' && typePlan.family === 'string'
@@ -7693,6 +7818,7 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
     case 'string_search':
     case 'string_slice':
     case 'string_case':
+    case 'string_trim':
       collectBoxedClosureDispatchSignatureIdsFromExpression(
         expression.value,
         signatureIds,
@@ -8166,6 +8292,7 @@ function collectBoxValueTypesFromExpression(
     case 'string_search':
     case 'string_slice':
     case 'string_case':
+    case 'string_trim':
       collectBoxValueTypesFromExpression(expression.value, valueTypes);
       break;
     case 'call':
@@ -8519,6 +8646,7 @@ function collectArrayRuntimeTypesFromExpression(
     case 'string_search':
     case 'string_slice':
     case 'string_case':
+    case 'string_trim':
     case 'tag_number':
     case 'tag_boolean':
     case 'tag_string':
@@ -9862,6 +9990,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         ...renderStringSearchHelperFunctions(plan),
         ...renderStringSliceHelperFunctions(plan),
         ...renderStringCaseHelperFunctions(plan),
+        ...renderStringTrimHelperFunctions(plan),
         ...stringConcatHelperFunctions,
         ...stringExportWrapperHelperFunctions,
         ...symbolBoundaryWrapperHelperFunctions,

@@ -4888,6 +4888,14 @@ function lowerStringMethodCallExpression(
       representation: 'owned_string_ref',
     };
   }
+  if ((method === 'trim' || method === 'trimStart' || method === 'trimEnd') && args.length === 0) {
+    return {
+      kind: 'string_trim',
+      sideKind: method === 'trimStart' ? 'start' : method === 'trimEnd' ? 'end' : 'both',
+      value: receiver,
+      representation: 'owned_string_ref',
+    };
+  }
   return undefined;
 }
 
