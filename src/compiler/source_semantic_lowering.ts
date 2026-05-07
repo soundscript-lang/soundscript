@@ -7119,10 +7119,6 @@ function lowerClassConstructionDeclaration(
   ): member is Extract<SourceClassMemberIR, { kind: 'property' }> =>
     member.kind === 'property' && !member.static
   );
-  if (properties.some((property) => !property.initializer)) {
-    context.unsupportedKinds.add('class_property_initializer');
-    return undefined;
-  }
   const constructor = classInfo.members.find((member) => member.kind === 'constructor');
   if (constructor && constructor.params.length !== initializer.args.length) {
     context.unsupportedKinds.add('class_constructor_arity');
@@ -7217,8 +7213,13 @@ function lowerClassConstructionDeclaration(
   const params: { internalName: string; value: SemanticExpressionIR }[] = [];
   for (const [index, param] of constructor.params.entries()) {
     if (param.kind !== 'identifier_binding') {
-      context.unsupportedKinds.add('class_constructor_parameter');
-      return undefined;
+      const tempParamName = nextTempLocalName(context, `ctor_param_${index}`);
+      addLocal(context, tempParamName, 'tagged_ref');
+      params.push({
+        internalName: addInlineSourceName(context, renames, transientNames, tempParamName, `constructor_${classInfo.name}_param_${index}`),
+        value: { kind: 'undefined_literal', representation: 'tagged_ref' },
+      });
+      continue;
     }
     const arg = initializer.args[index];
     if (!arg) {
