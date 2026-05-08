@@ -321,6 +321,9 @@ function taggedUnionExpressionForValue(
     case 'owned_string_ref':
       context.runtimeFamilies.add('string');
       return { kind: 'tag_string', value, representation: 'tagged_ref' };
+    case 'string_ref':
+      context.runtimeFamilies.add('string');
+      return { kind: 'tag_string', value, representation: 'tagged_ref' };
     case 'symbol_ref':
       context.runtimeFamilies.add('symbol');
       return { kind: 'tag_symbol', value, representation: 'tagged_ref' };
@@ -335,6 +338,8 @@ function taggedUnionExpressionForValue(
     case 'owned_tagged_array_ref':
     case 'closure_ref':
     case 'class_constructor_ref':
+      return { kind: 'tag_heap_object', value, representation: 'tagged_ref' };
+    case 'box_ref':
       return { kind: 'tag_heap_object', value, representation: 'tagged_ref' };
     default:
       return undefined;
