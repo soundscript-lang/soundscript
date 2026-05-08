@@ -6935,6 +6935,22 @@ function sourceClosureCaptures(
     }
     const existingBoxedValueType = parentContext.boxedLocals.get(name);
     if (!existingBoxedValueType && parentContext.localDeclarationKinds.get(name) !== 'const') {
+      // Mutable capture: wrap snapshot in box at capture point.
+      // Full pre-boxing at declaration site is a follow-up.
+      const valueType = representation ?? 'tagged_ref';
+      const boxName = `__boxed_capture_${name}`;
+      addLocal(parentContext, boxName, 'box_ref');
+      parentContext.pendingStatements.push({
+        kind: 'local_set',
+        name: boxName,
+        value: {
+          kind: 'box_new',
+          value: { kind: 'local_get', name, representation: representation },
+          valueType,
+          representation: 'box_ref',
+        },
+      });
+      captures.push({ name: boxName, value: { kind: 'local_get', name: boxName, representation: 'box_ref' }, valueType });
       continue;
     }
     const valueType = existingBoxedValueType ?? representation;
