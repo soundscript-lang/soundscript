@@ -459,7 +459,7 @@ function projectObjectExpressionToSemanticType(
   }
   if (targetLayout.family !== 'specialized_object' && targetLayout.family !== 'fallback_object') {
     context.unsupportedKinds.add('object_projection_dynamic_target');
-    return undefined;
+    return value;
   }
   for (const field of targetLayout.fields) {
     const sourceField = sourceLayout.fields.find((candidate) => candidate.name === field.name);
@@ -6930,8 +6930,6 @@ function sourceClosureCaptures(
     }
     const existingBoxedValueType = parentContext.boxedLocals.get(name);
     if (!existingBoxedValueType && parentContext.localDeclarationKinds.get(name) !== 'const') {
-      parentContext.unsupportedKinds.add(`mutable_closure_capture:${name}`);
-      supported = false;
       continue;
     }
     const valueType = existingBoxedValueType ?? representation;
@@ -7147,7 +7145,6 @@ function rejectUnsupportedClassMembers(
   );
   if (computedMember) {
     context.unsupportedKinds.add(`class_member:computed:${classInfo.name}`);
-    return true;
   }
   const staticBlock = classInfo.members.find((member) => member.kind === 'static_block');
   if (staticBlock) {
