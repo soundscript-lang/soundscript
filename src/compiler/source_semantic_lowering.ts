@@ -1538,7 +1538,6 @@ function pushPromiseCatchIntoClosure(
   }
   if (catchInfo.catchBinding && catchInfo.catchBinding.kind !== 'identifier_binding') {
     context.unsupportedKinds.add('async_await_catch_binding');
-    return undefined;
   }
   const finallyBlock = options?.finallyBlock;
   const finallyReturnStatement = options?.finallyReturnStatement;
