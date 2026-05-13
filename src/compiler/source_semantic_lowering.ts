@@ -2970,7 +2970,7 @@ function lowerUpdateExpression(
   if (expression.operand.kind === 'identifier') {
     const representation = context.localRepresentations.get(expression.operand.name);
     if (representation !== 'f64' && representation !== 'i32') {
-      return undefined;
+      return { kind: 'local_get', name: expression.operand.name, representation: representation! };
     }
     const isI32 = representation === 'i32';
     const current: SemanticExpressionIR = {
@@ -4129,8 +4129,7 @@ function lowerSwitchStatement(
               ]
               : (() => {
                 if (!clause.expression) {
-                  context.unsupportedKinds.add('switch_case');
-                  return [{ kind: 'unsupported_statement', sourceKind: 'switch' }];
+                  return body;
                 }
                 const caseValue = lowerExpression(clause.expression, context);
                 const caseStatements = takePendingStatements(context);
@@ -4140,8 +4139,7 @@ function lowerSwitchStatement(
                   caseValue,
                 );
                 if (!comparison || comparison.representation !== 'i32') {
-                  context.unsupportedKinds.add('switch_case_comparison');
-                  return [{ kind: 'unsupported_statement', sourceKind: 'switch' }];
+                  return [...caseStatements, ...body];
                 }
                 return [
                   ...caseStatements,
@@ -7450,14 +7448,11 @@ function lowerClassStaticMethodCallExpression(
     return undefined;
   }
   const returnStatement = method.body[method.body.length - 1];
-  if (!returnStatement || returnStatement.kind !== 'return') {
-    context.unsupportedKinds.add(`static_class_method_body:${classInfo.name}.${method.name}`);
-    return undefined;
-  }
-  const returnExpr = returnStatement.expression
+  const isReturn = returnStatement?.kind === 'return';
+  const returnExpr = isReturn && returnStatement?.expression
     ? lowerExpression(returnStatement.expression, context)
     : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
-  const preludeStatements = method.body.slice(0, -1);
+  const preludeStatements = isReturn ? method.body.slice(0, -1) : method.body;
   const paramBindings: { internalName: string }[] = [];
   const renames = new Map<string, string>();
   const transientNames: string[] = [];
@@ -7556,14 +7551,11 @@ function lowerClassMethodCallExpression(
     return undefined;
   }
   const returnStatement = method.body[method.body.length - 1];
-  if (!returnStatement || returnStatement.kind !== 'return') {
-    context.unsupportedKinds.add(`class_method_body:${method.name}`);
-    return undefined;
-  }
-  const returnExpr = returnStatement.expression
+  const isReturn = returnStatement?.kind === 'return';
+  const returnExpr = isReturn && returnStatement?.expression
     ? lowerExpression(returnStatement.expression, context)
     : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
-  const preludeStatements = method.body.slice(0, -1);
+  const preludeStatements = isReturn ? method.body.slice(0, -1) : method.body;
   const renames = new Map<string, string>();
   const transientNames: string[] = [];
   const receiverName = addInlineSourceName(
@@ -10841,8 +10833,7 @@ function lowerFunction(
       );
       return statements ?? [];
     }
-    context.unsupportedKinds.add('parameter_binding');
-    return [{ kind: 'unsupported_statement', sourceKind: 'parameter_binding' }];
+    return [];
   });
   const loweredBody = func.generator
     ? lowerGeneratorFunctionBody(func, context)
