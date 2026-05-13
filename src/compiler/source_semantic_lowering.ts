@@ -9531,6 +9531,26 @@ function appendSourceAwaitStepFromSequentialStatement(
     return [];
   }
   if (sourceStatementContainsAwaitExpression(statement)) {
+    if (statement.kind === 'if') {
+      const ifStmt = statement as SourceIfStatementIR;
+      const thenCollected = collectSourceAwaitStepsFromSequentialStatements(
+        ifStmt.consequent, context);
+      const elseCollected = ifStmt.alternate.length > 0
+        ? collectSourceAwaitStepsFromSequentialStatements(ifStmt.alternate, context)
+        : undefined;
+      if (!thenCollected || (ifStmt.alternate.length > 0 && !elseCollected)) {
+        return undefined;
+      }
+      steps.push({
+        leadingStatements: pendingLeadingStatements,
+        source: ifStmt.test,
+        type: { kind: 'i32' },
+        representation: 'i32',
+      });
+      return ifStmt.alternate.length > 0
+        ? [...thenCollected.trailingStatements, ...(elseCollected?.trailingStatements ?? [])]
+        : thenCollected.trailingStatements;
+    }
     return undefined;
   }
   return [...pendingLeadingStatements, statement];
