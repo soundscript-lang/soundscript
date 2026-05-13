@@ -1508,6 +1508,113 @@ function pushAsyncCompletionFinallyDispatchClosure(
   return closureFunctionId;
 }
 
+function findTerminalReturnAwait(
+  catchBlock: readonly SourceStatementIR[],
+): Extract<SourceStatementIR, { kind: 'return' }> | undefined {
+  if (catchBlock.length === 0) return undefined;
+  const last = catchBlock[catchBlock.length - 1];
+  if (last.kind !== 'return' || !last.expression) return undefined;
+  if (last.expression.kind === 'await_expression') {
+    return last as Extract<SourceStatementIR, { kind: 'return' }>;
+  }
+  return undefined;
+}
+
+function pushPromiseCatchWithAwaitIntoClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  catchInfo: NonNullable<SourceAwaitContinuationOptions['rejectionCatch']>,
+  captures: readonly SourceAsyncCapture[],
+  options: SourceAwaitContinuationOptions | undefined,
+  terminalReturnAwait: Extract<SourceStatementIR, { kind: 'return' }>,
+): number | undefined {
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  const closureContext = createAsyncAwaitContinuationContext(
+    context,
+    `closure_source_async_await_rejected_catch_await_${closureFunctionId}`,
+    captures,
+  );
+  const catchBindingName = catchInfo.catchBinding?.kind === 'identifier_binding'
+    ? catchInfo.catchBinding.name
+    : undefined;
+  if (catchBindingName) {
+    addLocal(closureContext, catchBindingName, 'tagged_ref');
+    closureContext.localDeclarationKinds.set(catchBindingName, 'let');
+  }
+  const leadingStatements = catchInfo.catchBlock.filter((s) => s !== terminalReturnAwait);
+  const awaitExpr = (terminalReturnAwait.expression as { kind: 'await_expression'; expression: SourceExpressionIR }).expression;
+  const awaitedSource = lowerExpression(awaitExpr, closureContext);
+  if (awaitedSource.representation !== 'heap_ref') {
+    context.unsupportedKinds.add('async_await_catch_control_flow');
+    return undefined;
+  }
+  const resolveFnId = pushPromiseResolveIntoClosure(closureContext, signatureId);
+  const rejectFnId = pushPromiseRejectIntoClosure(closureContext, signatureId);
+  const body: SemanticStatementIR[] = [
+    ...(catchBindingName ? [{
+      kind: 'local_set' as const,
+      name: catchBindingName,
+      value: localGetExpression('promise_reason', 'tagged_ref'),
+    }] : []),
+    ...leadingStatements.flatMap((s) => [...lowerStatement(s, closureContext)]),
+    ...takePendingStatements(closureContext),
+    {
+      kind: 'expression',
+      value: {
+        kind: 'call',
+        callee: SOUNDSCRIPT_PROMISE_THEN_HELPER_NAME,
+        args: [
+          awaitedSource,
+          closureLiteralForId(resolveFnId, signatureId, closureContext),
+          closureLiteralForId(rejectFnId, signatureId, closureContext),
+        ],
+        representation: 'tagged_ref',
+      },
+    },
+    { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+  ];
+  const unsupportedBodyKinds = [...closureContext.unsupportedKinds].sort();
+  context.moduleState.generatedFunctions.push({
+    name: closureContext.functionName,
+    exportName: '',
+    params: [
+      { name: 'capture_target_0', representation: 'box_ref' },
+      ...captures.map((c) => ({ name: c.name, representation: 'box_ref' as const })),
+      { name: 'promise_reason', representation: 'tagged_ref' },
+    ],
+    locals: closureContext.locals,
+    result: 'tagged_ref',
+    body,
+    bodyStatus: unsupportedBodyKinds.length === 0 ? 'emittable' : 'stub',
+    unsupportedBodyKinds,
+    runtimeFamilies: [...new Set([...closureContext.runtimeFamilies])].sort(),
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 1 + captures.length,
+    closureCaptureValueTypes: ['tagged_ref', ...captures.map((c) => c.valueType)],
+  });
+  return closureFunctionId;
+}
+
+function closureLiteralForId(
+  functionId: number,
+  signatureId: number,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR {
+  return {
+    kind: 'closure_literal',
+    functionId,
+    signatureId,
+    captures: [promiseTargetFromCapture()],
+    captureValueTypes: ['tagged_ref'],
+    representation: 'closure_ref',
+  };
+}
+
 function pushPromiseCatchIntoClosure(
   context: FunctionLoweringContext,
   signatureId: number,
@@ -1515,12 +1622,28 @@ function pushPromiseCatchIntoClosure(
   captures: readonly SourceAsyncCapture[],
   options?: SourceAwaitContinuationOptions,
 ): number | undefined {
-  if (
-    catchInfo.catchBlock.some((statement) => sourceStatementContainsAwaitExpression(statement)) ||
-    catchInfo.afterStatements.some((statement) => sourceStatementContainsAwaitExpression(statement))
-  ) {
-    context.unsupportedKinds.add('async_await_catch_control_flow');
-    return undefined;
+  const catchBlockHasAwait = catchInfo.catchBlock.some((s) =>
+    sourceStatementContainsAwaitExpression(s)
+  );
+  const afterStatementsHaveAwait = catchInfo.afterStatements.some((s) =>
+    sourceStatementContainsAwaitExpression(s)
+  );
+  if (catchBlockHasAwait || afterStatementsHaveAwait) {
+    if (afterStatementsHaveAwait) {
+      context.unsupportedKinds.add('async_await_catch_control_flow');
+      return undefined;
+    }
+    const terminalReturnAwait = findTerminalReturnAwait(catchInfo.catchBlock);
+    if (!terminalReturnAwait ||
+      catchInfo.catchBlock.filter(s => s !== terminalReturnAwait).some(s =>
+        sourceStatementContainsAwaitExpression(s)
+      )) {
+      context.unsupportedKinds.add('async_await_catch_control_flow');
+      return undefined;
+    }
+    return pushPromiseCatchWithAwaitIntoClosure(
+      context, signatureId, catchInfo, captures, options, terminalReturnAwait
+    );
   }
   const catchReturnStatement = catchInfo.catchReturnStatement;
   const catchThrowStatement = catchInfo.catchThrowStatement;
