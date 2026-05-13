@@ -386,6 +386,11 @@ function untagUnionExpressionForRepresentation(
     case 'closure_ref':
     case 'class_constructor_ref':
       return { kind: 'untag_heap_object', value, representation };
+    case 'string_ref':
+    case 'box_ref':
+      return { kind: 'untag_heap_object', value, representation };
+    case 'tagged_ref':
+      return value;
     default:
       return undefined;
   }
@@ -1070,7 +1075,7 @@ function lowerPromiseStaticCallExpression(
     return resolved;
   }
   const value = adaptExpressionToSemanticType(rawValue, promiseValueType, context) ?? rawValue;
-  const taggedValue = taggedUnionExpressionForValue(value, context);
+  const taggedValue = taggedUnionExpressionForValueOrUndefined(value, context);
   if (!taggedValue) {
     context.unsupportedKinds.add(`Promise.${expression.callee.property}:value`);
     return { kind: 'undefined_literal', representation: 'tagged_ref' };
@@ -9061,7 +9066,6 @@ function pushAsyncAwaitFulfilledClosure(
 ): number | undefined {
   const step = steps[index];
   if (!step) {
-    context.unsupportedKinds.add('async_await_step');
     return undefined;
   }
   const closureFunctionId = context.moduleState.nextClosureFunctionId;
@@ -9174,11 +9178,26 @@ function pushAsyncAwaitFulfilledClosure(
     }
   } else {
     const nextStep = steps[index + 1]!;
-    const awaitedSource = lowerExpression(nextStep.source, closureContext);
+    let awaitedSource = lowerExpression(nextStep.source, closureContext);
     const awaitedSourceStatements = takePendingStatements(closureContext);
     if (awaitedSource.representation !== 'heap_ref') {
-      context.unsupportedKinds.add('async_await_source');
-      return undefined;
+      const resolveName = nextTempLocalName(closureContext, 'async_await_source_promise');
+      closureContext.pendingStatements.push(
+        ...awaitedSourceStatements,
+        {
+          kind: 'local_set',
+          name: resolveName,
+          value: {
+            kind: 'call',
+            callee: SOUNDSCRIPT_PROMISE_RESOLVE_HELPER_NAME,
+            args: [awaitedSource],
+            representation: 'heap_ref',
+          },
+        },
+      );
+      awaitedSource = { kind: 'local_get', name: resolveName, representation: 'heap_ref' };
+    } else {
+      closureContext.pendingStatements.push(...awaitedSourceStatements);
     }
     const nextCaptures = sourceAsyncCapturesForLiveNames(
       closureContext,
@@ -9435,8 +9454,20 @@ function lowerSourceAwaitStepsToPromiseReturn(
   const awaitedSource = lowerExpression(firstStep.source, context);
   const awaitedSourceStatements = takePendingStatements(context);
   if (awaitedSource.representation !== 'heap_ref') {
-    context.unsupportedKinds.add('async_await_source');
-    return [{ kind: 'unsupported_statement', sourceKind: 'await_expression' }, { kind: 'trap' }];
+    const resolveName = nextTempLocalName(context, 'async_await_source_promise');
+    return [
+      ...awaitedSourceStatements,
+      {
+        kind: 'local_set',
+        name: resolveName,
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_RESOLVE_HELPER_NAME,
+          args: [awaitedSource],
+          representation: 'heap_ref',
+        },
+      },
+    ];
   }
 
   const taggedValue = promiseReactionTaggedValueType();
