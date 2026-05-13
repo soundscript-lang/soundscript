@@ -1165,7 +1165,8 @@ function pushPromiseRejectIntoClosureWithFinally(
   finallyReturnStatement?: Extract<SourceStatementIR, { kind: 'return' }>,
   finallyThrowStatement?: Extract<SourceStatementIR, { kind: 'throw' }>,
 ): number | undefined {
-  if (sourceStatementsContainControlTransfer(finallyStatements)) {
+  if (!hasTerminalControlFlowOverride(finallyStatements) &&
+    sourceStatementsContainControlTransfer(finallyStatements)) {
     context.unsupportedKinds.add('async_await_finally_control_flow');
     return undefined;
   }
@@ -1365,8 +1366,8 @@ function pushAsyncCompletionFinallyDispatchClosure(
   completion: AsyncCompletionNames,
   captures: readonly SourceAsyncCapture[],
 ): number | undefined {
-  if (
-    finallyReturnStatement || finallyThrowStatement
+  const hasFinallyOverride2 = hasTerminalControlFlowOverride(finallyBlock);
+  if ((finallyReturnStatement || finallyThrowStatement)
       ? sourceStatementsContainControlTransfer(
         finallyReturnStatement
           ? finallyBlock.filter((s) => s !== finallyReturnStatement)
@@ -1374,8 +1375,8 @@ function pushAsyncCompletionFinallyDispatchClosure(
           ? finallyBlock.filter((s) => s !== finallyThrowStatement)
           : finallyBlock,
       )
-      : sourceStatementsContainControlTransfer(finallyBlock)
-  ) {
+      : (!hasFinallyOverride2 && sourceStatementsContainControlTransfer(finallyBlock)))
+  {
     context.unsupportedKinds.add('async_await_finally_control_flow');
     return undefined;
   }
@@ -1529,9 +1530,8 @@ function pushPromiseCatchIntoClosure(
     ? catchInfo.catchBlock.filter((s) => s !== catchThrowStatement)
     : catchInfo.catchBlock;
   if (
-    (catchReturnStatement || catchThrowStatement)
-      ? sourceStatementsContainControlTransfer(catchLeadingStatements)
-      : sourceStatementsContainControlTransfer(catchInfo.catchBlock)
+    (catchReturnStatement || catchThrowStatement) &&
+    sourceStatementsContainControlTransfer(catchLeadingStatements)
   ) {
     context.unsupportedKinds.add('async_await_catch_control_flow');
     return undefined;
@@ -1545,6 +1545,7 @@ function pushPromiseCatchIntoClosure(
   const finallyThrowStatement = options?.finallyThrowStatement;
   if (
     finallyBlock &&
+    !hasTerminalControlFlowOverride(finallyBlock) &&
     (finallyReturnStatement || finallyThrowStatement
       ? sourceStatementsContainControlTransfer(
         finallyReturnStatement
