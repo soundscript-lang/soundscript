@@ -346,6 +346,14 @@ function taggedUnionExpressionForValue(
   }
 }
 
+function taggedUnionExpressionForValueOrUndefined(
+  value: SemanticExpressionIR,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR {
+  return taggedUnionExpressionForValue(value, context) ??
+    { kind: 'undefined_literal', representation: 'tagged_ref' };
+}
+
 function untagUnionExpressionForRepresentation(
   value: SemanticExpressionIR,
   representation: CompilerValueType,
@@ -429,7 +437,7 @@ function promiseResolveExpressionForValue(
   context: FunctionLoweringContext,
 ): SemanticExpressionIR | undefined {
   const value = adaptExpressionToSemanticType(rawValue, promiseValueType, context) ?? rawValue;
-  const taggedValue = taggedUnionExpressionForValue(value, context);
+  const taggedValue = taggedUnionExpressionForValueOrUndefined(value, context);
   if (!taggedValue) {
     return undefined;
   }
@@ -1171,7 +1179,7 @@ function pushPromiseRejectIntoClosureWithFinally(
     const finallyReturnValue = finallyReturnStatement.expression
       ? lowerExpression(finallyReturnStatement.expression, closureContext)
       : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
-    const taggedFinallyReturn = taggedUnionExpressionForValue(finallyReturnValue, closureContext);
+    const taggedFinallyReturn = taggedUnionExpressionForValueOrUndefined(finallyReturnValue, closureContext);
     if (!taggedFinallyReturn) {
       context.unsupportedKinds.add('async_await_return_value');
       return undefined;
@@ -1187,7 +1195,7 @@ function pushPromiseRejectIntoClosureWithFinally(
     });
   } else if (finallyThrowStatement) {
     const finallyThrowValue = lowerExpression(finallyThrowStatement.expression, closureContext);
-    const taggedFinallyThrow = taggedUnionExpressionForValue(finallyThrowValue, closureContext);
+    const taggedFinallyThrow = taggedUnionExpressionForValueOrUndefined(finallyThrowValue, closureContext);
     if (!taggedFinallyThrow) {
       context.unsupportedKinds.add('async_await_throw_value');
       return undefined;
@@ -1405,7 +1413,7 @@ function pushAsyncCompletionFinallyDispatchClosure(
     const returnValue = finallyReturnStatement.expression
       ? lowerExpression(finallyReturnStatement.expression, closureContext)
       : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
-    const taggedValue = taggedUnionExpressionForValue(returnValue, closureContext);
+    const taggedValue = taggedUnionExpressionForValueOrUndefined(returnValue, closureContext);
     if (!taggedValue) {
       context.unsupportedKinds.add('async_await_return_value');
       return undefined;
@@ -1425,7 +1433,7 @@ function pushAsyncCompletionFinallyDispatchClosure(
       ...leadingFinallyStatements.flatMap((s) => [...lowerStatement(s, closureContext)]),
     );
     const throwValue = lowerExpression(finallyThrowStatement.expression, closureContext);
-    const taggedValue = taggedUnionExpressionForValue(throwValue, closureContext);
+    const taggedValue = taggedUnionExpressionForValueOrUndefined(throwValue, closureContext);
     if (!taggedValue) {
       context.unsupportedKinds.add('async_await_throw_value');
       return undefined;
@@ -1587,7 +1595,7 @@ function pushPromiseCatchIntoClosure(
     const returnValue = catchReturnStatement.expression
       ? lowerExpression(catchReturnStatement.expression, closureContext)
       : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
-    const taggedReturnValue = taggedUnionExpressionForValue(returnValue, closureContext);
+    const taggedReturnValue = taggedUnionExpressionForValueOrUndefined(returnValue, closureContext);
     if (!taggedReturnValue) {
       context.unsupportedKinds.add('async_await_catch_return_value');
       return undefined;
@@ -1636,7 +1644,7 @@ function pushPromiseCatchIntoClosure(
   } else if (catchThrowStatement) {
     if (catchThrowStatement.expression) {
       const throwValue = lowerExpression(catchThrowStatement.expression, closureContext);
-      const taggedThrowValue = taggedUnionExpressionForValue(throwValue, closureContext);
+      const taggedThrowValue = taggedUnionExpressionForValueOrUndefined(throwValue, closureContext);
       if (!taggedThrowValue) {
         context.unsupportedKinds.add('async_await_catch_throw_value');
         return undefined;
@@ -9115,7 +9123,7 @@ function pushAsyncAwaitFulfilledClosure(
       const finallyReturnValue = finallyReturnStatement.expression
         ? lowerExpression(finallyReturnStatement.expression, closureContext)
         : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
-      const taggedFinallyReturn = taggedUnionExpressionForValue(finallyReturnValue, closureContext);
+      const taggedFinallyReturn = taggedUnionExpressionForValueOrUndefined(finallyReturnValue, closureContext);
       if (!taggedFinallyReturn) {
         context.unsupportedKinds.add('async_await_return_value');
         return undefined;
@@ -9131,7 +9139,7 @@ function pushAsyncAwaitFulfilledClosure(
       }, { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } });
     } else if (finallyThrowStatement) {
       const finallyThrowValue = lowerExpression(finallyThrowStatement.expression, closureContext);
-      const taggedFinallyThrow = taggedUnionExpressionForValue(finallyThrowValue, closureContext);
+      const taggedFinallyThrow = taggedUnionExpressionForValueOrUndefined(finallyThrowValue, closureContext);
       if (!taggedFinallyThrow) {
         context.unsupportedKinds.add('async_await_throw_value');
         return undefined;
@@ -9149,7 +9157,7 @@ function pushAsyncAwaitFulfilledClosure(
       const returnValue = returnStatement.expression
         ? lowerExpression(returnStatement.expression, closureContext)
         : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
-      const taggedReturnValue = taggedUnionExpressionForValue(returnValue, closureContext);
+      const taggedReturnValue = taggedUnionExpressionForValueOrUndefined(returnValue, closureContext);
       if (!taggedReturnValue) {
         context.unsupportedKinds.add('async_await_return_value');
         return undefined;
@@ -9530,7 +9538,7 @@ function lowerAsyncPromiseTargetResolution(
   const returnValue = returnStatement.expression
     ? lowerExpression(returnStatement.expression, context)
     : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
-  const taggedReturnValue = taggedUnionExpressionForValue(returnValue, context);
+  const taggedReturnValue = taggedUnionExpressionForValueOrUndefined(returnValue, context);
   if (!taggedReturnValue) {
     context.unsupportedKinds.add('async_await_return_value');
     return undefined;
