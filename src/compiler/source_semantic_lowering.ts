@@ -7953,60 +7953,27 @@ function lowerStatement(
         const value = lowerExpression(declaration.initializer, context);
         const statements = takePendingStatements(context);
         const localType = localTypeForBinding(declaration.binding, context);
-        addLocal(
-          context,
-          declaration.binding.name,
-          isFiniteUnionSemanticType(localType) ? 'tagged_ref' : value.representation,
-        );
+        const isNonConst = statement.declarationKind !== 'const';
+        const localRep = isNonConst
+          ? 'box_ref'
+          : (isFiniteUnionSemanticType(localType) ? 'tagged_ref' : value.representation);
+        addLocal(context, declaration.binding.name, localRep);
         context.localDeclarationKinds.set(
           declaration.binding.name,
           statement.declarationKind,
         );
-        const arrayLocal = arrayLocalInfoForInitializer(
-          declaration.initializer,
-          value,
-          context,
-        );
-        if (arrayLocal) {
-          context.arrayLocals.set(declaration.binding.name, arrayLocal);
-        }
-        if (isFiniteUnionSemanticType(localType)) {
-          const unionValue = adaptExpressionToSemanticType(value, localType, context) ??
-            taggedUnionExpressionForValue(value, context);
-          if (!unionValue) {
-            context.unsupportedKinds.add('finite_union_assignment');
-            return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
-          }
-          context.unionLocals.set(declaration.binding.name, localType!);
+        if (isNonConst) {
+          context.boxedLocals.set(declaration.binding.name, value.representation);
           return [...statements, {
             kind: 'local_set',
             name: declaration.binding.name,
-            value: unionValue,
+            value: {
+              kind: 'box_new',
+              value,
+              valueType: value.representation,
+              representation: 'box_ref',
+            },
           }];
-        }
-        const objectLocal = value.representation === 'heap_ref'
-          ? objectLocalInfoForRead(declaration.initializer, value, context)
-          : undefined;
-        if (objectLocal) {
-          context.objectLocals.set(declaration.binding.name, objectLocal);
-        }
-        const mapLocal = value.representation === 'heap_ref'
-          ? mapLocalInfoForRead(declaration.initializer, value, context)
-          : undefined;
-        if (mapLocal) {
-          context.mapLocals.set(declaration.binding.name, mapLocal);
-        }
-        const setLocal = value.representation === 'heap_ref'
-          ? setLocalInfoForRead(declaration.initializer, value, context)
-          : undefined;
-        if (setLocal) {
-          context.setLocals.set(declaration.binding.name, setLocal);
-        }
-        const closureLocal = value.representation === 'closure_ref'
-          ? closureLocalInfoForRead(declaration.initializer, value, context)
-          : undefined;
-        if (closureLocal) {
-          context.closureLocals.set(declaration.binding.name, closureLocal);
         }
         return [...statements, { kind: 'local_set', name: declaration.binding.name, value }];
       });
