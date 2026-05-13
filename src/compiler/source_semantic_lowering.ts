@@ -1594,6 +1594,12 @@ function pushPromiseCatchIntoClosure(
     ...lowerStatement(statement, closureContext),
   ]);
   const body: SemanticStatementIR[] = [
+    ...(needsCatchDestructure && effectiveCatchBindingName ? lowerDestructuredBindingStatements(
+      catchInfo.catchBinding!,
+      effectiveCatchBindingName,
+      'tagged_ref',
+      closureContext,
+    ) : []),
     ...catchBindingStatements,
     ...catchBody,
   ];
