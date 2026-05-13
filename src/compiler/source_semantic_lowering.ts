@@ -9935,12 +9935,13 @@ function lowerAsyncWhileBodyAwaitSchedule(
     context,
   );
   if (!collected || collected.steps.length === 0) {
-    context.unsupportedKinds.add('async_while_body');
+    if (!collected) {
+      context.unsupportedKinds.add('async_while_body');
+    }
     return undefined;
   }
   const [step] = collected.steps;
   if (!step) {
-    context.unsupportedKinds.add('async_while_step');
     return undefined;
   }
   const leadingStatements = step.leadingStatements.flatMap((leadingStatement) => [
